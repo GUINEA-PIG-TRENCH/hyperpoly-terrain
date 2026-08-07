@@ -44,6 +44,8 @@ export class HyperPolyGeology {
     const pass = encoder.beginComputePass();
     pass.end();
   }
+
+  async uploadQuantizedTerrain(shellModelGenerator) {
     // shellModelGenerator(bx, by, bz) -> Float32Array[6]
     const metaHost = new Float32Array(this.totalBricks * this.channels * 4);
     const queue = this.device.queue;

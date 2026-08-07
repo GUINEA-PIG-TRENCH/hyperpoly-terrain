@@ -13,8 +13,9 @@ export class CollisionSystem {
     this.device = device;
 
     // Hit output buffer: up to 64 concurrent queries
+    // HitRecord stride = 64 bytes (WGSL 16-byte vec3 alignment)
     this.hitBuffer = device.createBuffer({
-      size: 64 * 32, // 64 HitRecords × 32 bytes each
+      size: 64 * 64, // 64 HitRecords × 64 bytes each
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
 
@@ -32,7 +33,7 @@ export class CollisionSystem {
 
     // Readback staging for results
     this.readbackBuffer = device.createBuffer({
-      size: 32, // Single HitRecord
+      size: 64, // Single HitRecord (64 bytes)
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
 
@@ -77,7 +78,7 @@ export class CollisionSystem {
 
     // Sphere-cast bind group (group 1)
     this.bindGroups.spherecast = device.createBindGroup({
-      layout: this.pipelines.spherecast.getBindGroupLayout(0),
+      layout: this.pipelines.spherecast.getBindGroupLayout(1),
       entries: [
         { binding: 0, resource: { buffer: qefBuffer } },
         { binding: 1, resource: { buffer: hermiteBuffer } },
@@ -112,20 +113,20 @@ export class CollisionSystem {
     pass.end();
 
     // Copy hit to readback
-    encoder.copyBufferToBuffer(this.hitBuffer, 0, this.readbackBuffer, 0, 32);
+    encoder.copyBufferToBuffer(this.hitBuffer, 0, this.readbackBuffer, 0, 64);
     this.device.queue.submit([encoder.finish()]);
 
     // Readback
     await this.readbackBuffer.mapAsync(GPUMapMode.READ);
-    const data = new Float32Array(this.readbackBuffer.getMappedRange().slice(0, 32));
+    const data = new Float32Array(this.readbackBuffer.getMappedRange().slice(0, 64));
     this.readbackBuffer.unmap();
 
     const hit = {
       hit: data[0] !== 0,
-      pos: [data[1], data[2], data[3]],
-      normal: [data[4], data[5], data[6]],
-      materialType: data[7],
-      t: data[8],
+      pos: [data[4], data[5], data[6]],
+      normal: [data[8], data[9], data[10]],
+      materialType: data[12],
+      t: data[13],
     };
 
     return hit;
@@ -153,18 +154,18 @@ export class CollisionSystem {
     pass.dispatchWorkgroups(1, 1, 1);
     pass.end();
 
-    encoder.copyBufferToBuffer(this.hitBuffer, 0, this.readbackBuffer, 0, 32);
+    encoder.copyBufferToBuffer(this.hitBuffer, 0, this.readbackBuffer, 0, 64);
     this.device.queue.submit([encoder.finish()]);
 
     await this.readbackBuffer.mapAsync(GPUMapMode.READ);
-    const data = new Float32Array(this.readbackBuffer.getMappedRange().slice(0, 32));
+    const data = new Float32Array(this.readbackBuffer.getMappedRange().slice(0, 64));
     this.readbackBuffer.unmap();
 
     return {
       hit: data[0] !== 0,
-      pushOut: [data[1], data[2], data[3]],
-      normal: [data[4], data[5], data[6]],
-      penetrationDepth: data[8],
+      pushOut: [data[4], data[5], data[6]],
+      normal: [data[8], data[9], data[10]],
+      penetrationDepth: data[13],
     };
   }
 
