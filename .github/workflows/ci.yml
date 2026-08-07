@@ -17,9 +17,9 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm ci || echo "No package.json, skipping"
-      - name: WebGPU pipeline compilation test
+- name: WebGPU pipeline compilation test
         run: |
-          node --experimental-webgpu <<'EOF'
+          node <<'EOF'
           // Minimal WebGPU pipeline compilation smoke test
           // Validates WGSL syntax and bind group layouts without GPU
           const fs = require('fs');
@@ -63,7 +63,7 @@ jobs:
             const openBraces = (content.match(/{/g) || []).length;
             const closeBraces = (content.match(/}/g) || []).length;
             if (openBraces !== closeBraces) {
-              console.error(`SYNTAX: ${file} - unbalanced braces (${openBraces}/{${closeBraces}})`);
+              console.error(`SYNTAX: ${file} - unbalanced braces (${openBraces}/${closeBraces})`);
               errors++;
             }
             // Check for balanced parentheses
