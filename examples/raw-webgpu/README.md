@@ -1,95 +1,112 @@
-# hyperpoly-terrain: Zero-Sync WebGPU Benchmark
+# HyperPoly Terrain: Zero-Sync WebGPU Benchmark
 
-## Overview
-A minimal, self-contained Proof of Concept demonstrating the core architecture of hyperpoly-terrain: a GPU-native terrain engine that eliminates CPU bottlenecks by maintaining all simulation state exclusively on the GPU through 6-channel material tensors.
+**Interactive POC demonstrating GPU-native terrain simulation with zero CPU-GPU synchronization.**
 
-## Key Features Demonstrated
+## 🎯 What This Demonstrates
 
-### Zero-Sync Architecture
-- **No CPU Simulation Loop**: All physics computations execute via WebGPU compute shaders
-- **Direct Render Pipeline**: Rendering reads directly from compute buffers with zero CPU round-trips
-- **6-Channel Material Tensors**: Each grid cell stores height, velocity (X/Y), sediment, moisture, and material type
+This single-file benchmark proves the core `hyperpoly-terrain` architecture:
+- **6-Channel Material Tensors**: Height, velocity (X/Y), water depth, sediment load, material type
+- **Zero-Sync Compute Pipeline**: All physics (fluid flow, erosion, deposition) execute on GPU via WGSL compute shaders
+- **Direct Render Pass**: Fragment shader reads directly from compute buffers—no CPU round-trips
+- **Real-Time Interaction**: Mouse-driven water injection and terrain carving with immediate visual feedback
 
-### Technical Specifications
+## 🚀 Quick Start
+
+1. **Open in Browser**: Requires Chrome 113+, Edge 113+, or any WebGPU-enabled browser
+2. **Navigate to**: `examples/raw-webgpu/index.html`
+3. **Interact**:
+   - **Left-Click + Drag**: Inject water pulse at cursor location
+   - **Right-Click + Drag**: Carve terrain (decrease height, add sediment)
+   - **Reset Button**: Regenerate initial terrain noise
+
+## 📊 Benchmark Metrics
+
+The HUD displays real-time performance data:
+- **FPS**: Target 60 FPS locked
+- **Frame Time**: Should stay under 16.67ms
 - **Grid Resolution**: 512×512 (262,144 cells)
-- **Memory Footprint**: ~6.3 MB GPU memory
-- **Workgroup Size**: 8×8 threads (optimized for most GPUs)
-- **Compute Dispatches**: ~4,096 workgroups per frame
+- **GPU Memory**: ~6.3 MB for tensor storage
+- **Sync Status**: ZERO-SYNC (no CPU readback during simulation)
 
-### WGSL Shaders Included
-1. **Compute Shader**: Hydraulic erosion, fluid advection, sediment transport
-2. **Render Shader**: Height-based terrain coloring with flow visualization
+## 🏗️ Architecture Overview
 
-## Running the Demo
-
-### Requirements
-- Chrome 113+ or Edge 113+ (WebGPU enabled by default)
-- Firefox Nightly (with `dom.webgpu.enabled` in about:config)
-- A discrete GPU recommended for best performance
-
-### Instructions
-1. Open `index.html` in a WebGPU-capable browser
-2. Observe the FPS counter and real-time statistics
-3. Use the control buttons to:
-   - Toggle hydraulic erosion on/off
-   - Add fluid pulses to the terrain
-   - Reset the simulation
-
-### Expected Performance
-- **Target FPS**: 60 FPS locked on modern GPUs
-- **Frame Time**: <16ms per frame
-- **CPU Usage**: Minimal (<5% single core)
-
-## Architecture Highlights
-
-### Material Tensor Layout
-```
-Channel 0: Height (elevation 0.0-1.0)
-Channel 1: Velocity X (fluid flow direction)
-Channel 2: Velocity Y (fluid flow direction)  
-Channel 3: Sediment (erosion material carried)
-Channel 4: Moisture (water saturation level)
-Channel 5: Material Type (rock/soil/sand bitmask)
+### Compute Shader (`computePhysics`)
+```wgsl
+struct MaterialTensor {
+    height : f32,      // Channel 0: Terrain elevation
+    velocityX : f32,   // Channel 1: Fluid velocity X
+    velocityY : f32,   // Channel 2: Fluid velocity Y
+    water : f32,       // Channel 3: Water depth
+    sediment : f32,    // Channel 4: Suspended sediment
+    material : f32     // Channel 5: Material classification
+};
 ```
 
-### Simulation Pipeline
-1. **Initialize**: CPU creates GPU buffers with procedural terrain
-2. **Compute Pass**: WGSL shader updates all tensor channels in parallel
-3. **Render Pass**: Vertex shader reads directly from compute buffer
-4. **Repeat**: No CPU intervention required during simulation
+**Physics Steps per Frame:**
+1. **Mouse Interaction**: Inject water or carve terrain based on cursor position
+2. **Fluid Advection**: Shallow water approximation with neighbor sampling
+3. **Velocity Integration**: Gravity-driven flow with viscosity damping
+4. **Erosion/Deposition**: Sediment capacity model based on flow speed
 
-### Physics Implemented
-- Shallow water approximation for fluid flow
-- Semi-Lagrangian advection for mass conservation
-- Hydraulic erosion with sediment transport
-- Sediment deposition based on flow velocity
-- Boundary condition handling
+### Fragment Shader (`fsMain`)
+Maps tensor channels to RGB colors:
+- **Height**: Sand → Grass → Rock → Snow gradient
+- **Water**: Semi-transparent blue overlay (depth-based)
+- **Sediment**: Brown tint for high sediment load
 
-## Benchmark Metrics
+## 🎨 Visual Enhancements (Phase 1 Complete)
 
-The demo displays real-time statistics:
-- **FPS**: Frames per second (target: 60)
-- **Frame Time**: Milliseconds per frame (target: <16ms)
-- **Grid Size**: Terrain resolution
-- **Compute Dispatches**: Total simulation steps executed
-- **Simulation Time**: Elapsed simulation time
-- **GPU Memory**: Buffer allocation size
+- **Dynamic Color Grading**: Biome-aware terrain coloring
+- **Water Transparency**: Depth-based alpha blending
+- **Sediment Visualization**: Visible deposition trails
+- **Cyber-Styled HUD**: Real-time metrics overlay
 
-## Next Steps for Production
+## 🖱️ Mouse Interaction (Phase 1 Complete)
 
-To extend this POC for production use:
+- **Raycast-to-Grid**: Screen coordinates → tensor indices
+- **Brush System**: Radial influence falloff for natural interaction
+- **Dual-Mode**: Water injection (left-click) vs. carving (right-click)
+- **Live Feedback**: Cursor info panel shows grid coordinates and mode
 
-1. **Multi-pass Compute**: Separate erosion, fluid, and deposition passes
-2. **Sparse Streaming**: Only update active regions for larger terrains
-3. **Texture Sampling**: Use storage textures instead of buffers for better cache locality
-4. **Instanced Rendering**: Convert point-list to triangle mesh for smoother visuals
-5. **Interaction Layer**: Add mouse/touch input via compute buffer writes
-6. **LOD System**: Implement level-of-detail for planetary-scale rendering
+## 📈 Production Roadmap
 
-## License
+| Feature | Status | Priority |
+|---------|--------|----------|
+| 512×512 Grid | ✅ Complete | — |
+| 6-Channel Tensors | ✅ Complete | — |
+| Zero-Sync Pipeline | ✅ Complete | — |
+| Mouse Interaction | ✅ Complete | — |
+| Dynamic Coloring | ✅ Complete | — |
+| 1024×1024 Grid | 🔲 Pending | High |
+| Multi-Layer Erosion | 🔲 Pending | High |
+| Texture Splattering | 🔲 Pending | Medium |
+| Compute-Driven Mesh | 🔲 Pending | Medium |
+| Post-Processing Bloom | 🔲 Pending | Low |
 
-Proprietary - Part of hyperpoly-terrain Engine
+## 🔧 Technical Specifications
+
+- **API**: Pure WebGPU (no Three.js, Babylon, or other libraries)
+- **Shaders**: WGSL (WebGPU Shading Language)
+- **Workgroup Size**: 8×8 (64 threads per dispatch)
+- **Dispatch Count**: 4,096 workgroups per frame (512×512 / 8×8)
+- **Buffer Layout**: Structured Storage Buffer (SSBO)
+- **Render Topology**: Triangle Strip (full-screen quad)
+
+## 📹 Recording the 30-Second Benchmark Video
+
+**Recommended Sequence:**
+1. **0:00–0:05**: Show idle terrain with FPS counter at 60
+2. **0:05–0:15**: Left-click water injection—demonstrate fluid flow and erosion
+3. **0:15–0:20**: Right-click carving—show immediate terrain deformation
+4. **0:20–0:25**: Toggle between modes rapidly—prove zero-latency response
+5. **0:25–0:30**: Zoom out (if implemented) or reset—end on stable 60 FPS
+
+**Pro Tip**: Record with OBS at 60 FPS, include the HUD in-frame to prove performance claims.
+
+## 📄 License
+
+Proprietary — Guinea Pig Trench LLC. All rights reserved.
 
 ---
 
-*This benchmark demonstrates the viability of zero-sync WebGPU terrain simulation for enterprise applications in Web-CAD, Digital Twins, and GIS visualization.*
+**Next Steps**: After recording the benchmark video, pivot to **Strategy B (Commercial)** by creating enterprise-facing materials targeting LiDAR calibration, drone swarm coordination, and digital twin applications.
