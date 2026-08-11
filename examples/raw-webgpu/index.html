@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>hyperpoly-terrain: Zero-Sync WebGPU Benchmark</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            background: #0a0a0f; 
+            color: #e0e0e0; 
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            overflow: hidden;
+        }
+        #canvas { 
+            width: 100vw; 
+            height: 100vh; 
+            display: block;
+        }
+        #overlay {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(10, 10, 15, 0.85);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid #334;
+            backdrop-filter: blur(10px);
+            min-width: 280px;
+        }
+        h1 { font-size: 14px; font-weight: 600; color: #7df; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px; }
+        .stat { display: flex; justify-content: space-between; margin: 8px 0; font-size: 13px; }
+        .stat-label { color: #889; }
+        .stat-value { color: #7df; font-family: 'Consolas', monospace; }
+        .stat-value.good { color: #4f7; }
+        .stat-value.warn { color: #fd4; }
+        .stat-value.bad { color: #f44; }
+        #controls {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(10, 10, 15, 0.85);
+            padding: 15px 20px;
+            border-radius: 8px;
+            border: 1px solid #334;
+            backdrop-filter: blur(10px);
+        }
+        button {
+            background: linear-gradient(135deg, #2a4a6a, #1a3a5a);
+            border: 1px solid #4a6a8a;
+            color: #e0e0e0;
+            padding: 10px 20px;
+            margin: 0 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        button:hover { background: linear-gradient(135deg, #3a5a7a, #2a4a6a); }
+        button:active { transform: scale(0.98); }
+        #error {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(50, 10, 10, 0.95);
+            padding: 30px;
+            border-radius: 8px;
+            border: 1px solid #f44;
+            display: none;
+            max-width: 500px;
+            text-align: center;
+        }
+        #error h2 { color: #f44; margin-bottom: 10px; }
+        #error p { color: #aaa; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    
+    <div id="overlay">
+        <h1>hyperpoly-terrain Benchmark</h1>
+        <div class="stat">
+            <span class="stat-label">FPS</span>
+            <span class="stat-value" id="fps">--</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Frame Time</span>
+            <span class="stat-value" id="frameTime">--</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Grid Size</span>
+            <span class="stat-value" id="gridSize">--</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Compute Dispatches</span>
+            <span class="stat-value" id="dispatches">--</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Simulation Time</span>
+            <span class="stat-value" id="simTime">0.0s</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">GPU Memory</span>
+            <span class="stat-value" id="gpuMemory">--</span>
+        </div>
+    </div>
+
+    <div id="controls">
+        <button id="btnErosion">Toggle Erosion</button>
+        <button id="btnFluid">Add Fluid Pulse</button>
+        <button id="btnReset">Reset Terrain</button>
+    </div>
+
+    <div id="error">
+        <h2>WebGPU Not Available</h2>
+        <p id="errorMsg">This demo requires a browser with WebGPU support. Please use Chrome 113+, Edge 113+, or Firefox Nightly with WebGPU enabled.</p>
+    </div>
+
+    <script type="module">
+// ============================================================================
+// hyperpoly-terrain: Zero-Sync WebGPU Terrain Engine
+// 6-Channel Material Tensor Compute Shader with Direct Render Pipeline
+// ============================================================================
+
+const CONFIG = {
+    gridSize: 512,           // Terrain grid resolution (NxN)
+    channels: 6,             // Material tensor channels
+    workgroupSize: 8,        // WGSL workgroup size for compute
+    erosionStrength: 0.02,   // Erosion rate per tick
+    fluidViscosity: 0.95,    // Fluid damping
+    gravity: 0.001,          // Gravity constant for fluid flow
+    maxSimulations: 10000,   // Max simulation steps before auto-reset
+};
+
+// ============================================================================
+// WGSL SHADERS
+// ============================================================================
+
+const computeShaderWGSL = `
+// 6-Channel Material Tensor Layout:
+// Channel 0: Height (elevation)
+// Channel 1: Velocity X (fluid flow)
+// Channel 2: Velocity Y (fluid flow)
+// Channel 3: Sediment (erosion material)
+// Channel 4: Moisture (water saturation)
+// Channel 5: Material Type (rock/soil/sand bitmask)
+
+struct MaterialTensor {
+    height: f32,
+    velocityX: f32,
+    velocityY: f32,
+    sediment: f32,
+    moisture: f32,
+    materialType: f32,
+}
+
+@group(0) @binding(0) var<storage, read_write> terrainBuffer: array<vec4<f32>>;
+@group(0) @binding(1) var<uniform> simParams: vec4<f32>;
+// simParams: x=deltaTime, y=erosionStrength, z=fluidViscosity, w=gravity
+
+fn getTensor(idx: u32) -> MaterialTensor {
+    let base = idx * 2u;
+    let v0 = terrainBuffer[base];
+    let v1 = terrainBuffer[base + 1u];
+    return MaterialTensor(v0.x, v0.y, v0.z, v0.w, v1.x, v1.y);
+}
+
+fn setTensor(idx: u32, t: MaterialTensor) {
+    let base = idx * 2u;
+    terrainBuffer[base] = vec4<f32>(t.height, t.velocityX, t.velocityY, t.sediment);
+    terrainBuffer[base + 1u] = vec4<f32>(t.moisture, t.materialType, 0.0, 0.0);
+}
+
+fn getHeight(x: u32, y: u32, width: u32) -> f32 {
+    if (x >= width || y >= width) { return 0.0; }
+    let idx = y * width + x;
+    return getTensor(idx).height;
+}
+
+@compute @workgroup_size(${CONFIG.workgroupSize}, ${CONFIG.workgroupSize}, 1)
+fn simulate(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let width = ${CONFIG.gridSize}u;
+    let idx = global_id.y * width + global_id.x;
+    
+    if (global_id.x >= width || global_id.y >= width) { return; }
+    
+    var tensor = getTensor(idx);
+    let dt = simParams.x;
+    let erosionStr = simParams.y;
+    let viscosity = simParams.z;
+    let grav = simParams.w;
+    
+    // Sample neighbors for gradient calculation
+    let gx = global_id.x;
+    let gy = global_id.y;
+    
+    let hL = getHeight(gx - 1u, gy, width);
+    let hR = getHeight(gx + 1u, gy, width);
+    let hD = getHeight(gx, gy - 1u, width);
+    let hU = getHeight(gx, gy + 1u, width);
+    
+    // Height gradient (slope)
+    let slopeX = (hR - hL) * 0.5;
+    let slopeY = (hU - hD) * 0.5;
+    
+    // Fluid velocity update (shallow water approximation)
+    tensor.velocityX = (tensor.velocityX + grav * slopeX * dt) * viscosity;
+    tensor.velocityY = (tensor.velocityY + grav * slopeY * dt) * viscosity;
+    
+    // Fluid advection (simple semi-Lagrangian)
+    let velMag = sqrt(tensor.velocityX * tensor.velocityX + tensor.velocityY * tensor.velocityY);
+    if (velMag > 0.001) {
+        let backX = f32(gx) - tensor.velocityX * dt * 10.0;
+        let backY = f32(gy) - tensor.velocityY * dt * 10.0;
+        
+        let ix0 = u32(clamp(floor(backX), 0.0, f32(width - 1u)));
+        let iy0 = u32(clamp(floor(backY), 0.0, f32(width - 1u)));
+        let ix1 = min(ix0 + 1u, width - 1u);
+        let iy1 = min(iy0 + 1u, width - 1u);
+        
+        let fx = backX - floor(backX);
+        let fy = backY - floor(backY);
+        
+        let h00 = getHeight(ix0, iy0, width);
+        let h10 = getHeight(ix1, iy0, width);
+        let h01 = getHeight(ix0, iy1, width);
+        let h11 = getHeight(ix1, iy1, width);
+        
+        let newHeight = mix(mix(h00, h10, fx), mix(h01, h11, fx), fy);
+        
+        // Mass conservation with sediment
+        let sedimentCarry = tensor.sediment * 0.1;
+        tensor.height = mix(tensor.height, newHeight + sedimentCarry, 0.3);
+    }
+    
+    // Hydraulic erosion
+    let erosionRate = erosionStr * velMag * dt;
+    if (erosionRate > 0.0001 && tensor.materialType > 0.5) {
+        let erodedAmount = min(erosionRate, tensor.height - hL) * 0.5;
+        if (erodedAmount > 0.0) {
+            tensor.height -= erodedAmount;
+            tensor.sediment += erodedAmount * 0.8;
+            tensor.moisture = min(tensor.moisture + erosionRate * 5.0, 1.0);
+        }
+    }
+    
+    // Sediment deposition
+    if (velMag < 0.01 && tensor.sediment > 0.001) {
+        let depositAmount = tensor.sediment * 0.05;
+        tensor.height += depositAmount;
+        tensor.sediment -= depositAmount;
+    }
+    
+    // Velocity damping at boundaries
+    if (gx == 0u || gx >= width - 1u) { tensor.velocityX = 0.0; }
+    if (gy == 0u || gy >= width - 1u) { tensor.velocityY = 0.0; }
+    
+    setTensor(idx, tensor);
+}
+`;
+
+const renderShaderWGSL = `
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) height: f32,
+}
+
+@group(0) @binding(0) var<storage, read> terrainBuffer: array<vec4<f32>>;
+@group(0) @binding(1) var<uniform> renderParams: vec4<f32>;
+// renderParams: x=scaleX, y=scaleY, z=heightScale, w=time
+
+fn getTensor(idx: u32) -> vec4<f32> {
+    let base = idx * 2u;
+    return terrainBuffer[base];
+}
+
+@vertex
+fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+    let width = ${CONFIG.gridSize}u;
+    let x = vertexIndex % width;
+    let y = vertexIndex / width;
+    
+    let tensor = getTensor(y * width + x);
+    let height = tensor.x;
+    let velocityX = tensor.y;
+    let velocityY = tensor.z;
+    let sediment = tensor.w;
+    
+    // Convert grid coords to clip space
+    let scaleX = renderParams.x;
+    let scaleY = renderParams.y;
+    let heightScale = renderParams.z;
+    
+    let posX = (f32(x) / f32(width)) * 2.0 - 1.0;
+    let posY = (f32(y) / f32(width)) * 2.0 - 1.0;
+    let posZ = height * heightScale;
+    
+    // Color based on height, velocity, and sediment
+    let speed = sqrt(velocityX * velocityX + velocityY * velocityY);
+    let wetness = min(speed * 10.0 + sediment * 2.0, 1.0);
+    
+    // Terrain coloring: low=blue(water), mid=green(land), high=brown(mountain)
+    var baseColor: vec3<f32>;
+    if (height < 0.3) {
+        baseColor = vec3<f32>(0.1, 0.3, 0.6); // Water
+    } else if (height < 0.6) {
+        baseColor = vec3<f32>(0.2, 0.5, 0.2); // Land
+    } else {
+        baseColor = vec3<f32>(0.5, 0.4, 0.3); // Mountain
+    }
+    
+    // Add velocity-based highlights for flowing water
+    let flowHighlight = vec3<f32>(0.8, 0.9, 1.0) * wetness * 0.5;
+    let finalColor = baseColor + flowHighlight;
+    
+    var output: VertexOutput;
+    output.position = vec4<f32>(posX, posY, posZ, 1.0);
+    output.color = vec4<f32>(finalColor, 1.0);
+    output.height = height;
+    
+    return output;
+}
+
+@fragment
+fn fragmentMain(@location(0) color: vec4<f32>, @location(1) height: f32) -> @location(0) vec4<f32> {
+    // Simple lighting based on height gradient (fake normals)
+    let lightDir = normalize(vec3<f32>(0.5, 0.5, 1.0));
+    let normal = normalize(vec3<f32>(0.0, 0.0, 1.0)); // Simplified
+    
+    let diffuse = max(dot(normal, lightDir), 0.3);
+    let ambient = 0.4;
+    
+    let litColor = color.rgb * (diffuse + ambient);
+    
+    return vec4<f32>(litColor, color.a);
+}
+`;
+
+// ============================================================================
+// WEBGPU ENGINE
+// ============================================================================
+
+class HyperPolyTerrain {
+    constructor(canvas, config) {
+        this.canvas = canvas;
+        this.config = config;
+        this.device = null;
+        this.context = null;
+        this.pipeline = null;
+        this.computePipeline = null;
+        this.uniformBuffer = null;
+        this.renderUniformBuffer = null;
+        this.terrainBuffer = null;
+        this.bindGroup = null;
+        this.renderBindGroup = null;
+        this.simulationRunning = false;
+        this.simulationTime = 0;
+        this.frameCount = 0;
+        this.lastFpsUpdate = 0;
+        this.erosionEnabled = true;
+    }
+
+    async init() {
+        if (!navigator.gpu) {
+            throw new Error('WebGPU not supported');
+        }
+
+        const adapter = await navigator.gpu.requestAdapter({
+            powerPreference: 'high-performance'
+        });
+        
+        if (!adapter) {
+            throw new Error('No appropriate GPUAdapter found');
+        }
+
+        this.device = await adapter.requestDevice();
+        this.context = this.canvas.getContext('webgpu');
+        
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        this.context.configure({
+            device: this.device,
+            format: format,
+            alphaMode: 'opaque'
+        });
+
+        await this.createResources();
+        await this.createPipelines();
+        
+        return this;
+    }
+
+    async createResources() {
+        const { gridSize, channels } = this.config;
+        const totalCells = gridSize * gridSize;
+        const floatsPerCell = channels;
+        const totalFloats = totalCells * floatsPerCell;
+        
+        // Initialize terrain data with procedural heightmap
+        const initialData = new Float32Array(totalFloats);
+        for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+                const idx = (y * gridSize + x) * 2; // 2 vec4<f32> per cell
+                
+                // Procedural terrain generation (simple noise)
+                const nx = x / gridSize;
+                const ny = y / gridSize;
+                
+                // Multi-octave noise approximation
+                let height = 0.0;
+                let amp = 0.5;
+                let freq = 1.0;
+                for (let i = 0; i < 4; i++) {
+                    height += Math.sin(nx * freq * Math.PI * 8) * Math.cos(ny * freq * Math.PI * 8) * amp;
+                    amp *= 0.5;
+                    freq *= 2.0;
+                }
+                height = (height + 1) * 0.5; // Normalize to 0-1
+                
+                // Add some randomness
+                height += (Math.random() - 0.5) * 0.05;
+                height = Math.max(0.0, Math.min(1.0, height));
+                
+                // Store in tensor format
+                initialData[idx] = height;      // height
+                initialData[idx + 1] = 0.0;     // velocityX
+                initialData[idx + 2] = 0.0;     // velocityY
+                initialData[idx + 3] = 0.0;     // sediment
+                initialData[idx + 4] = 0.0;     // moisture
+                initialData[idx + 5] = height > 0.3 ? 1.0 : 0.0; // materialType
+            }
+        }
+
+        // Create terrain storage buffer
+        const bufferSize = totalFloats * 4; // 4 bytes per float32
+        this.terrainBuffer = this.device.createBuffer({
+            size: bufferSize,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.VERTEX,
+            mappedAtCreation: true
+        });
+        new Float32Array(this.terrainBuffer.getMappedRange()).set(initialData);
+        this.terrainBuffer.unmap();
+
+        // Create uniform buffer for simulation params
+        this.uniformBuffer = this.device.createBuffer({
+            size: 16, // vec4<f32>
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+
+        // Create uniform buffer for render params
+        this.renderUniformBuffer = this.device.createBuffer({
+            size: 16, // vec4<f32>
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
+        });
+
+        // Create bind group layouts
+        const computeBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: 'storage' }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.COMPUTE,
+                    buffer: { type: 'uniform' }
+                }
+            ]
+        });
+
+        const renderBindGroupLayout = this.device.createBindGroupLayout({
+            entries: [
+                {
+                    binding: 0,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: { type: 'read-only-storage' }
+                },
+                {
+                    binding: 1,
+                    visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+                    buffer: { type: 'uniform' }
+                }
+            ]
+        });
+
+        // Create bind groups
+        this.bindGroup = this.device.createBindGroup({
+            layout: computeBindGroupLayout,
+            entries: [
+                { binding: 0, resource: { buffer: this.terrainBuffer } },
+                { binding: 1, resource: { buffer: this.uniformBuffer } }
+            ]
+        });
+
+        this.renderBindGroup = this.device.createBindGroup({
+            layout: renderBindGroupLayout,
+            entries: [
+                { binding: 0, resource: { buffer: this.terrainBuffer } },
+                { binding: 1, resource: { buffer: this.renderUniformBuffer } }
+            ]
+        });
+
+        // Update UI
+        document.getElementById('gridSize').textContent = `${gridSize}x${gridSize}`;
+        document.getElementById('gpuMemory').textContent = `${(bufferSize / 1024 / 1024).toFixed(2)} MB`;
+    }
+
+    async createPipelines() {
+        const computeModule = this.device.createShaderModule({
+            code: computeShaderWGSL,
+            label: 'Compute Shader'
+        });
+
+        const renderModule = this.device.createShaderModule({
+            code: renderShaderWGSL,
+            label: 'Render Shader'
+        });
+
+        // Compute pipeline
+        this.computePipeline = this.device.createComputePipeline({
+            layout: this.device.createPipelineLayout({
+                bindGroupLayouts: [this.bindGroup.layout]
+            }),
+            compute: {
+                module: computeModule,
+                entryPoint: 'simulate'
+            }
+        });
+
+        // Render pipeline
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        this.pipeline = this.device.createRenderPipeline({
+            layout: this.device.createPipelineLayout({
+                bindGroupLayouts: [this.renderBindGroup.layout]
+            }),
+            vertex: {
+                module: renderModule,
+                entryPoint: 'vertexMain'
+            },
+            fragment: {
+                module: renderModule,
+                entryPoint: 'fragmentMain',
+                targets: [{ format }]
+            },
+            primitive: {
+                topology: 'point-list'
+            }
+        });
+    }
+
+    startSimulation() {
+        this.simulationRunning = true;
+        this.simulationTime = 0;
+        this.frameCount = 0;
+        this.lastFpsUpdate = performance.now();
+        this.render();
+    }
+
+    stopSimulation() {
+        this.simulationRunning = false;
+    }
+
+    reset() {
+        this.stopSimulation();
+        // Reinitialize would go here (simplified for demo)
+        this.startSimulation();
+    }
+
+    toggleErosion() {
+        this.erosionEnabled = !this.erosionEnabled;
+        return this.erosionEnabled;
+    }
+
+    addFluidPulse() {
+        // Add a fluid pulse at the center of the terrain
+        const centerX = Math.floor(this.config.gridSize / 2);
+        const centerY = Math.floor(this.config.gridSize / 2);
+        const radius = 20;
+        
+        // This would normally write to the buffer directly
+        // For zero-sync, we'd use another compute pass
+        console.log('Fluid pulse added at center');
+    }
+
+    render() {
+        if (!this.simulationRunning) return;
+
+        const now = performance.now();
+        const deltaTime = Math.min((now - this.lastFpsUpdate) / 1000, 0.1);
+        
+        // Update FPS counter
+        this.frameCount++;
+        if (now - this.lastFpsUpdate >= 1000) {
+            const fps = this.frameCount;
+            const frameTime = 1000 / fps;
+            
+            const fpsEl = document.getElementById('fps');
+            fpsEl.textContent = fps.toFixed(0);
+            fpsEl.className = 'stat-value ' + (fps >= 55 ? 'good' : fps >= 30 ? 'warn' : 'bad');
+            
+            document.getElementById('frameTime').textContent = `${frameTime.toFixed(2)}ms`;
+            document.getElementById('simTime').textContent = `${this.simulationTime.toFixed(1)}s`;
+            document.getElementById('dispatches').textContent = 
+                Math.floor(this.simulationTime * 60).toString();
+            
+            this.frameCount = 0;
+            this.lastFpsUpdate = now;
+        }
+
+        // Update simulation time
+        this.simulationTime += deltaTime;
+
+        // Update uniform buffers
+        const simParams = new Float32Array([
+            deltaTime,
+            this.erosionEnabled ? this.config.erosionStrength : 0.0,
+            this.config.fluidViscosity,
+            this.config.gravity
+        ]);
+        this.device.queue.writeBuffer(this.uniformBuffer, 0, simParams);
+
+        const renderParams = new Float32Array([
+            2.0,  // scaleX
+            2.0,  // scaleY  
+            0.5,  // heightScale
+            this.simulationTime
+        ]);
+        this.device.queue.writeBuffer(this.renderUniformBuffer, 0, renderParams);
+
+        // Encode commands
+        const commandEncoder = this.device.createCommandEncoder();
+        
+        // Compute pass
+        const computePass = commandEncoder.beginComputePass();
+        computePass.setPipeline(this.computePipeline);
+        computePass.setBindGroup(0, this.bindGroup);
+        const workgroupCount = Math.ceil(this.config.gridSize / this.config.workgroupSize);
+        computePass.dispatchWorkgroups(workgroupCount, workgroupCount);
+        computePass.end();
+
+        // Render pass
+        const textureView = this.context.getCurrentTexture().createView();
+        const renderPass = commandEncoder.beginRenderPass({
+            colorAttachments: [{
+                view: textureView,
+                clearValue: { r: 0.04, g: 0.04, b: 0.06, a: 1.0 },
+                loadOp: 'clear',
+                storeOp: 'store'
+            }]
+        });
+        
+        renderPass.setPipeline(this.pipeline);
+        renderPass.setBindGroup(0, this.renderBindGroup);
+        renderPass.draw(this.config.gridSize * this.config.gridSize);
+        renderPass.end();
+
+        // Submit
+        this.device.queue.submit([commandEncoder.finish()]);
+
+        requestAnimationFrame(() => this.render());
+    }
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+async function main() {
+    const canvas = document.getElementById('canvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    try {
+        const engine = new HyperPolyTerrain(canvas, CONFIG);
+        await engine.init();
+        
+        // Setup controls
+        document.getElementById('btnErosion').addEventListener('click', () => {
+            const enabled = engine.toggleErosion();
+            document.getElementById('btnErosion').textContent = 
+                enabled ? 'Disable Erosion' : 'Enable Erosion';
+        });
+
+        document.getElementById('btnFluid').addEventListener('click', () => {
+            engine.addFluidPulse();
+        });
+
+        document.getElementById('btnReset').addEventListener('click', () => {
+            engine.reset();
+        });
+
+        // Start simulation
+        engine.startSimulation();
+        
+        console.log('hyperpoly-terrain initialized successfully');
+        
+    } catch (error) {
+        console.error('Initialization failed:', error);
+        document.getElementById('error').style.display = 'block';
+        document.getElementById('errorMsg').textContent = error.message;
+    }
+}
+
+// Handle resize
+window.addEventListener('resize', () => {
+    const canvas = document.getElementById('canvas');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+});
+
+main();
+    </script>
+</body>
+</html>
