@@ -47,7 +47,7 @@ fn mat3_add_outer(a: vec3<f32>, weight: f32) -> Mat3x3 {
 }
 
 // Cramer's rule for 3×3 system (robust enough for QEF with regularization)
-fn solve_3x3(ata: Mat3x3, atb: vec3<f32>, reg: f32) -> vec3<f32> {
+fn solve_3x3(ata: Mat3x3, atb: vec3<f32>, reg: f32, fallback: vec3<f32>) -> vec3<f32> {
     // Add regularization to diagonal
     var a00 = ata.m[0] + reg;
     var a01 = ata.m[1];
@@ -66,7 +66,7 @@ fn solve_3x3(ata: Mat3x3, atb: vec3<f32>, reg: f32) -> vec3<f32> {
     
     if (abs(det) < 1e-12) {
         // Singular — fall back to centroid
-        return vec3<f32>(0.0);
+        return fallback;
     }
     
     let inv_det = 1.0 / det;
@@ -214,24 +214,28 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     
+    if (idx == 0u) {
+        atomicStore(&vertex_count, total);
+    }
+
     // Fallback: if no crossings (shouldn't happen), use cell center
     if (point_count == 0u) {
         let v_out = cell_origin + vec3<f32>(0.5) * qef_params.cell_size;
-        let slot = atomicAdd(&vertex_count, 1u);
-        vertices[slot] = v_out;
+        if (idx < arrayLength(&vertices)) {
+            vertices[idx] = v_out;
+        }
         return;
     }
     
     centroid /= f32(point_count);
     
     // Solve QEF
-    let v_qef = solve_3x3(ata, atb, qef_params.regularization);
+    let v_qef = solve_3x3(ata, atb, qef_params.regularization, centroid);
     
     // Clamp vertex to cell bounds
     let v_clamped = clamp(v_qef, cell_origin, cell_origin + vec3<f32>(qef_params.cell_size));
     
-    let slot = atomicAdd(&vertex_count, 1u);
-    if (slot < arrayLength(&vertices)) {
-        vertices[slot] = v_clamped;
+    if (idx < arrayLength(&vertices)) {
+        vertices[idx] = v_clamped;
     }
 }

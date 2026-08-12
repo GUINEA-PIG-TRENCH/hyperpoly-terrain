@@ -79,11 +79,7 @@ const GRAVITY:      f32 = 9.81;
 @group(0) @binding(4) var<storage, read>     perm_y_u16:   array<F16>;
 @group(0) @binding(5) var<storage, read>     perm_z_u16:   array<F16>;
 
-@group(1) @binding(0) var<storage, read> active_list:       array<ActiveBrick>;
-@group(1) @binding(1) var<storage, read> dispatch_indirect: DispatchIndirect;
-
-// ── Compacted queue from scheduling pass ──
-@group(1) @binding(2) var<storage, read> compacted_queue: array<u32>;
+@group(1) @binding(0) var<storage, read> compacted_queue: array<u32>;
 
 // =============================================================================
 // ── Phase 6A: Dynamic Range Shadow Buffer Decode ──

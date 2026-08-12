@@ -3,24 +3,16 @@
 // =============================================================================
 // Pass 1: Culling compute — reads brick_metadata, writes indirect dispatch buffer
 // Pass 2: Solver compute — indirect dispatch from Pass 1 output
-//
-// Architecture:
-//   Browser owns the runtime (WGSL shader + this host).
-//   Kaggle owns the truth (material tensor calibration).
-//   The WGSL shader and WASM fallback are both compiled artifacts from
-//   the same hydraulic solver logic — this host loads WGSL; a Kaggle
-//   notebook produces the WASM fallback separately.
 // =============================================================================
 
 const WORLD_DIM   = 256;
-const BRICK_DIM   = 8;
-const BRICKS_X    = WORLD_DIM / BRICK_DIM;  // 32
-const BRICKS_Y    = WORLD_DIM / BRICK_DIM;  // 32
-const LAYERS_PER_DISPATCH = 4;
-const BRICKS_Z_DISPATCH = WORLD_DIM / LAYERS_PER_DISPATCH;  // 64
+const BRICK_DIM   = 16;
+const BRICKS_X    = WORLD_DIM / BRICK_DIM;  // 16
+const BRICKS_Y    = WORLD_DIM / BRICK_DIM;  // 16
+const BRICKS_Z    = WORLD_DIM / BRICK_DIM;  // 16
 
 const TOTAL_VOXELS       = WORLD_DIM * WORLD_DIM * WORLD_DIM;           // 16,777,216
-const TOTAL_BRICK_SLICES = BRICKS_X * BRICKS_Y * BRICKS_Z_DISPATCH;    // 65,536
+const TOTAL_BRICK_SLICES = BRICKS_X * BRICKS_Y * BRICKS_Z;             // 4,096
 const MAX_ACTIVE_BRICKS  = TOTAL_BRICK_SLICES;
 
 const BUDGET_MAX_DEFAULT = 3000;
@@ -34,27 +26,32 @@ export class HydraulicPipeline {
         this.device = device;
         this.budgetMax = budgetMax;
 
-        // --- SoA Voxel Buffers ---
-        // f16 = 2 bytes/elem; vec3<f16> = 6 bytes/elem
+        // --- SoA Voxel Buffers (u16 per voxel = 2 bytes) ---
         this.voxelWater    = this._createStorage(TOTAL_VOXELS * 2);
+        this.voxelWaterDst = this._createStorage(TOTAL_VOXELS * 2);
         this.voxelSediment = this._createStorage(TOTAL_VOXELS * 2);
-        this.voxelPerm     = this._createStorage(TOTAL_VOXELS * 6);
+        this.voxelPermX    = this._createStorage(TOTAL_VOXELS * 2);
+        this.voxelPermY    = this._createStorage(TOTAL_VOXELS * 2);
+        this.voxelPermZ    = this._createStorage(TOTAL_VOXELS * 2);
         this.voxelCohesion = this._createStorage(TOTAL_VOXELS * 2);
 
-        // --- Brick Metadata (1 u32 per 8×8×4 dispatch slice) ---
-        this.brickMetadata = this._createStorage(TOTAL_BRICK_SLICES * 4);
+        // --- Brick Metadata (6 channels × 16 bytes per brick) ---
+        this.brickMetadata = this._createStorage(TOTAL_BRICK_SLICES * 6 * 16);
+
+        // --- Brick State for culling tracking (u32 per brick) ---
+        this.brickState = this._createStorage(TOTAL_BRICK_SLICES * 4);
 
         // --- Dispatch Chain Buffers ---
-        // Indirect dispatch: 3 × u32 = 12 bytes, requires INDIRECT usage
+        // Indirect dispatch: 3 × u32 = 12 bytes
         this.indirectBuffer = device.createBuffer({
             size: 12,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.INDIRECT | GPUBufferUsage.COPY_DST,
         });
 
-        // Active list: ActiveBrick = 16 bytes (u32 + 12-byte vec3<u32>)
-        this.activeList = this._createStorage(MAX_ACTIVE_BRICKS * 16);
+        // Active list: ActiveBrick (budgeted queue index list)
+        this.activeList = this._createStorage(MAX_ACTIVE_BRICKS * 4);
 
-        // Budget counter — reset per frame by CPU write
+        // Budget counter — reset per frame by GPU-side reset kernel
         this.budgetCounter = device.createBuffer({
             size: 4,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -83,6 +80,13 @@ export class HydraulicPipeline {
         this._budgetedQueue = this._createStorage(MAX_ACTIVE_BRICKS * 4);  // u32
         this._brickPriority = this._createStorage(TOTAL_BRICK_SLICES * 4); // f32
 
+        // Culling schedule parameters (moistureThreshold, stabilityThreshold, emaAlpha, deadband)
+        this.schedParamsBuffer = device.createBuffer({
+            size: 16,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(this.schedParamsBuffer, 0, new Float32Array([0.1, 0.5, 0.3, 0.05]));
+
         // Camera position uniform for LOD culling (vec3<f32> = 12 bytes)
         this._cameraPos = new Float32Array([128.0, 64.0, 128.0]);
         this.cameraBuffer = device.createBuffer({
@@ -100,7 +104,7 @@ export class HydraulicPipeline {
     // Initialization — must be called after WGSL sources are fetched
     // ==========================================================================
 
-    async init(pass1WGSL, pass2WGSL, metaDispatchWGSL) {
+    async init(pass1WGSL, pass2WGSL, metaDispatchWGSL, editMinBuffer, editMaxBuffer) {
         const device = this.device;
 
         const pass1Module = device.createShaderModule({ code: pass1WGSL });
@@ -108,7 +112,7 @@ export class HydraulicPipeline {
 
         this.pass1Pipeline = device.createComputePipeline({
             layout: 'auto',
-            compute: { module: pass1Module, entryPoint: 'cull_active_bricks' },
+            compute: { module: pass1Module, entryPoint: 'culling_pass' },
         });
 
         // --- Reset Queue Pipeline ---
@@ -136,11 +140,12 @@ export class HydraulicPipeline {
             this._metaBindGroup = device.createBindGroup({
                 layout: this._metaPipeline.getBindGroupLayout(0),
                 entries: [
-                    { binding: 0, resource: { buffer: this.indirectBuffer }},      // compacted_queue
+                    { binding: 0, resource: { buffer: this.activeList     }},      // compacted_queue
                     { binding: 1, resource: { buffer: this.budgetCounter  }},       // queue_count
                     { binding: 2, resource: { buffer: this._brickPriority }},       // brick_priority
                     { binding: 3, resource: { buffer: this._budgetedQueue }},       // budgeted_queue
                     { binding: 4, resource: { buffer: this.indirectBuffer }},       // dispatch_args (reuse mem)
+                    { binding: 5, resource: { buffer: this._metaUniformBuffer }},   // meta_params
                 ],
             });
             // Meta params uniform
@@ -153,20 +158,19 @@ export class HydraulicPipeline {
 
         this.pass2Pipeline = device.createComputePipeline({
             layout: 'auto',
-            compute: { module: pass2Module, entryPoint: 'hydraulic_solver' },
+            compute: { module: pass2Module, entryPoint: 'advection_pass' },
         });
 
         // --- Pass 1 Bind Group ---
-        // bindings: 0=meta_buffer, 1=brick_state, 2=raw_queue, 3=queue_count,
-        //           4=dispatch_args, 5=sched_params, 6=camera_pos
         this.pass1BindGroup = device.createBindGroup({
             layout: this.pass1Pipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: this.brickMetadata }},
-                { binding: 1, resource: { buffer: this.indirectBuffer }},
+                { binding: 1, resource: { buffer: this.brickState    }},
                 { binding: 2, resource: { buffer: this.activeList     }},
                 { binding: 3, resource: { buffer: this.budgetCounter  }},
-                { binding: 6, resource: { buffer: this.cameraBuffer   }},
+                { binding: 4, resource: { buffer: this.schedParamsBuffer }},
+                { binding: 5, resource: { buffer: this.cameraBuffer   }},
             ],
         });
 
@@ -174,39 +178,37 @@ export class HydraulicPipeline {
         this.pass2BindGroup0 = device.createBindGroup({
             layout: this.pass2Pipeline.getBindGroupLayout(0),
             entries: [
-                { binding: 0, resource: { buffer: this.voxelWater    }},
-                { binding: 1, resource: { buffer: this.voxelSediment }},
-                { binding: 2, resource: { buffer: this.voxelPerm     }},
-                { binding: 3, resource: { buffer: this.voxelCohesion }},
-                { binding: 4, resource: { buffer: this.brickMetadata }},
+                { binding: 0, resource: { buffer: this.brickMetadata }},
+                { binding: 1, resource: { buffer: this.voxelWater    }},
+                { binding: 2, resource: { buffer: this.voxelWaterDst }},
+                { binding: 3, resource: { buffer: this.voxelPermX    }},
+                { binding: 4, resource: { buffer: this.voxelPermY    }},
+                { binding: 5, resource: { buffer: this.voxelPermZ    }},
+                { binding: 10, resource: { buffer: editMinBuffer     }},
+                { binding: 11, resource: { buffer: editMaxBuffer     }},
             ],
         });
 
         this.pass2BindGroup1 = device.createBindGroup({
             layout: this.pass2Pipeline.getBindGroupLayout(1),
             entries: [
-                { binding: 0, resource: { buffer: this.activeList     }},
-                { binding: 1, resource: { buffer: this.indirectBuffer }},
-            ],
-        });
-
-        this.pass2BindGroup2 = device.createBindGroup({
-            layout: this.pass2Pipeline.getBindGroupLayout(2),
-            entries: [
-                { binding: 0, resource: { buffer: this.uniformBuffer }},
+                { binding: 0, resource: { buffer: this._budgetedQueue }}, // compacted_queue
             ],
         });
     }
 
     // ==========================================================================
-    // Upload initial world state from material tensor (Kaggle output or procedural)
+    // Upload initial world state from material tensor
     // ==========================================================================
 
-    uploadInitialState({ water, sediment, permeability, cohesion, metadata }) {
+    uploadInitialState({ water, sediment, permX, permY, permZ, cohesion, metadata }) {
         const q = this.device.queue;
         q.writeBuffer(this.voxelWater,    0, water);
+        q.writeBuffer(this.voxelWaterDst, 0, water);
         q.writeBuffer(this.voxelSediment, 0, sediment);
-        q.writeBuffer(this.voxelPerm,     0, permeability);
+        q.writeBuffer(this.voxelPermX,    0, permX);
+        q.writeBuffer(this.voxelPermY,    0, permY);
+        q.writeBuffer(this.voxelPermZ,    0, permZ);
         q.writeBuffer(this.voxelCohesion, 0, cohesion);
         q.writeBuffer(this.brickMetadata, 0, metadata);
     }
@@ -228,7 +230,7 @@ export class HydraulicPipeline {
         queue.writeBuffer(this.cameraBuffer, 0, this._cameraPos);
 
         // ========================================================================
-        // Pass 0: GPU-side queue reset — replaces host writeBuffer
+        // Pass 0: GPU-side queue reset
         // ========================================================================
         {
             const pass = cmd.beginComputePass();
@@ -239,13 +241,12 @@ export class HydraulicPipeline {
         }
 
         // ========================================================================
-        // Pass 1: Culling — determine which bricks are active
+        // Pass 1: Culling — determine active bricks
         // ========================================================================
         {
             const pass = cmd.beginComputePass();
             pass.setPipeline(this.pass1Pipeline);
             pass.setBindGroup(0, this.pass1BindGroup);
-            pass.setBindGroup(1, this._cullingUniformBindGroup);
 
             const workgroups = Math.ceil(TOTAL_BRICK_SLICES / 64);
             pass.dispatchWorkgroups(workgroups, 1, 1);
@@ -262,25 +263,27 @@ export class HydraulicPipeline {
             const pass = cmd.beginComputePass();
             pass.setPipeline(this._metaPipeline);
             pass.setBindGroup(0, this._metaBindGroup);
-            // Dispatch enough WGs to cover MAX_ACTIVE_BRICKS (65536) at 256 threads ea
-            pass.dispatchWorkgroups(256, 1, 1);
+            pass.dispatchWorkgroups(16, 1, 1); // 16 workgroups * 256 threads covers 4096 bricks
             pass.end();
         }
 
         // ========================================================================
-        // Pass 2: Hydraulic solver — only dispatched bricks run
+        // Pass 2: Hydraulic solver — only active bricks run
         // ========================================================================
         {
             const pass = cmd.beginComputePass();
             pass.setPipeline(this.pass2Pipeline);
             pass.setBindGroup(0, this.pass2BindGroup0);
             pass.setBindGroup(1, this.pass2BindGroup1);
-            pass.setBindGroup(2, this.pass2BindGroup2);
 
-            // GPU driver reads indirectBuffer.x → dispatches exactly that many
             pass.dispatchWorkgroupsIndirect(this.indirectBuffer, 0);
             pass.end();
         }
+
+        // ========================================================================
+        // Pass 3: Water Ping-Pong Buffer Swap
+        // ========================================================================
+        cmd.copyBufferToBuffer(this.voxelWaterDst, 0, this.voxelWater, 0, TOTAL_VOXELS * 2);
 
         queue.submit([cmd.finish()]);
     }
@@ -304,7 +307,7 @@ export class HydraulicPipeline {
     }
 
     // ==========================================================================
-    // Update budget uniform (no kernel recompile needed)
+    // Update budget uniform
     // ==========================================================================
 
     setBudgetMax(newBudget) {
@@ -320,29 +323,16 @@ export class HydraulicPipeline {
     _createStorage(size) {
         return this.device.createBuffer({
             size,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
         });
-    }
-
-    // Culling uniform bind group (reused)
-    get _cullingUniformBindGroup() {
-        if (!this.__cullingBG) {
-            this.__cullingBG = this.device.createBindGroup({
-                layout: this.pass1Pipeline.getBindGroupLayout(1),
-                entries: [
-                    { binding: 0, resource: { buffer: this.uniformBuffer }},
-                ],
-            });
-        }
-        return this.__cullingBG;
     }
 }
 
 // =============================================================================
-// Bootstrap helper — loads WGSL sources and initializes the pipeline
+// Bootstrap helper
 // =============================================================================
 
-export async function createHydraulicPipeline(device, budgetMax) {
+export async function createHydraulicPipeline(device, budgetMax, editMinBuffer, editMaxBuffer) {
     const [pass1WGSL, pass2WGSL, metaDispatchWGSL] = await Promise.all([
         fetch('compute/pass1_culling.wgsl').then(r => r.text()),
         fetch('compute/pass2_solver.wgsl').then(r => r.text()),
@@ -350,6 +340,6 @@ export async function createHydraulicPipeline(device, budgetMax) {
     ]);
 
     const pipeline = new HydraulicPipeline(device, budgetMax);
-    await pipeline.init(pass1WGSL, pass2WGSL, metaDispatchWGSL);
+    await pipeline.init(pass1WGSL, pass2WGSL, metaDispatchWGSL, editMinBuffer, editMaxBuffer);
     return pipeline;
 }

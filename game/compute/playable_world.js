@@ -66,10 +66,10 @@ export class PlayableWorld {
     // Initial mesh extraction
     this.editManager.createBindGroup(
       this.engine.metaBuffer,
-      this.engine.channelBuffers[0],  // density
-      this.engine.channelBuffers[5],  // cohesion
-      this.engine.channelBuffers[2],  // perm_x
-      this.engine.channelBuffers[3],  // water
+      this.engine.channelBuffers[0],  // density (channel 0)
+      this.engine.channelBuffers[1],  // cohesion (channel 1)
+      this.engine.channelBuffers[2],  // ice (channel 2)
+      this.engine.channelBuffers[4],  // water (channel 4)
       this.engine.brickFlagsBuffer    // flags
     );
     await this.extractor.fullExtract(

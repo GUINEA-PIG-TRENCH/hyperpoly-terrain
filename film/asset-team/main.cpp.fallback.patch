@@ -1,0 +1,25 @@
+--- a/main.cpp
++++ b/main.cpp
+@@ -187,10 +187,22 @@
+     instBuf->setBufferAt(*engine, 0,
+         VertexBuffer::BufferDescriptor(instances.data(), instances.size() * sizeof(InstanceData), nullptr));
+ 
++    // Fallback for Filament SDKs that removed setInstancedData().
++    // Build as instanced geometry when the unified geometry() overload exists.
++    instBuf->setBufferAt(*engine, 0,
++        VertexBuffer::BufferDescriptor(instances.data(), instances.size() * sizeof(InstanceData), nullptr));
++
+     // Renderable
+     auto& rm = engine->getRenderableManager();
+     RenderableManager::Builder builder(1);
+-    builder.setGeometry(0, RenderableManager::PrimitiveType::TRIANGLES,
++    builder.geometry(0, RenderableManager::PrimitiveType::TRIANGLES,
+                         grass.vb, grass.ib, 0, grass.indexCount);
+-    builder.setMaterial(0, matInstance);
+-    builder.setInstances(GRASS_COUNT);
+-    builder.setInstancedData(instBuf, 0);
++    builder.material(0, matInstance);
++    builder.instanceCount(GRASS_COUNT);
++    builder.instanced(instBuf);
+     auto renderable = rm.create(builder.build(*engine));
+     scene->addEntity(renderable);

@@ -151,7 +151,7 @@ export class FirstPersonController {
 
     // Ground collision
     const feetPos = [this.pos[0], this.pos[1] - eyeHeight + radius, this.pos[2]];
-    const groundHit = this.collision.sphereCast(feetPos, [0, -1, 0], radius, 2.0);
+    const groundHit = this.collision.sphereCast(feetPos, radius, [0, -2.0, 0]);
 
     if (groundHit.hit && groundHit.distance < radius + 0.1) {
       this.onGround = true;
@@ -169,7 +169,7 @@ export class FirstPersonController {
       const sweepDist = len * dt + radius;
 
       const center = [this.pos[0], this.pos[1] - eyeHeight/2, this.pos[2]];
-      const wallHit = this.collision.sphereCast(center, normDir, radius, sweepDist);
+      const wallHit = this.collision.sphereCast(center, radius, [normDir[0]*sweepDist, 0, normDir[2]*sweepDist]);
 
       if (wallHit.hit) {
         const pushAmount = radius - wallHit.distance + 0.01;

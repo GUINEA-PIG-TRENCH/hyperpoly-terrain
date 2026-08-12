@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>HYPERPOLY QEF Pipeline Verification</title>
+<style>
+  body { background:#111; color:#eee; font:14px/1.4 monospace; margin:20px; }
+  #log { white-space:pre; max-height:500px; overflow:auto; background:#000; padding:12px; border:1px solid #333; }
+  .pass { color:#0f0; } .fail { color:#f44; } .info { color:#8af; }
+  canvas { width:320px; height:320px; border:1px solid #333; image-rendering:pixelated; }
+</style>
+</head>
+<body>
+<h2>QEF Pipeline Governor Verification</h2>
+<canvas id="slice" width="256" height="256"></canvas>
+<div id="log"></div>
+
+<script type="module">
+// ./game/compute/phase5_extractor/phase5_qef.wgsl (inlined)
+const qefWGSL = `
+struct HermiteData {
+  pos: vec3<f32>;
+  normal: vec3<f32>;
+  weight: f32;
+}
+@group(0) @binding(0) var<storage, read> hermite_buffer: array<HermiteData>;
+@group(0) @binding(1) var<storage, read_write> vertex_buffer: array<vec3<f32>>;
+@group(0) @binding(2) var<uniform> qef_params: vec2<f32>;
+
+const CELLS: u32 = 255u;
+const VERTICES_PER_DIM: u32 = 257u;
+const VERTEX_STRIDE: u32 = 66049u;
+
+@compute @workgroup_size(8, 8, 1)
+fn qef_solve(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let cx = gid.x;
+  let cy = gid.y;
+  let cz = gid.z;
+  if (cx >= CELLS || cy >= CELLS || cz >= CELLS) { return; }
+  fn load(vx:u32,vy:u32,vz:u32)->HermiteData {
+    let vi = vx + vy * VERTICES_PER_DIM + vz * VERTEX_STRIDE;
+    return hermite_buffer[vi];
+  }
+  var h: array<HermiteData, 8>;
+  h[0] = load(cx,   cy,   cz);
+  h[1] = load(cx+1, cy,   cz);
+  h[2] = load(cx,   cy+1, cz);
+  h[3] = load(cx+1, cy+1, cz);
+  h[4] = load(cx,   cy,   cz+1);
+  h[5] = load(cx+1, cy,   cz+1);
+  h[6] = load(cx,   cy+1, cz+1);
+  h[7] = load(cx+1, cy+1, cz+1);
+  var A=mat3x3<f32>(0.0); var b=vec3<f32>(0.0); var max_w=0.0;
+  for (var i=0u;i<8u;i++) {
+    let n=h[i].normal; let p=h[i].pos; let w=h[i].weight;
+    let wt=1.0+w*10.0;
+    A[0][0]+=wt*n.x*n.x; A[0][1]+=wt*n.x*n.y; A[0][2]+=wt*n.x*n.z;
+    A[1][0]+=wt*n.y*n.x; A[1][1]+=wt*n.y*n.y; A[1][2]+=wt*n.y*n.z;
+    A[2][0]+=wt*n.z*n.x; A[2][1]+=wt*n.z*n.y; A[2][2]+=wt*n.z*n.z;
+    b+=wt*dot(n,p)*n;
+    max_w=max(max_w,w);
+  }
+  var sol=(h[0].pos+h[7].pos)*0.5;
+  for(var it=0u;it<10u;it++){ let g=2.0*(A*sol-b); sol-=0.1*g; }
+  if(max_w>qef_params.x){
+    var best=h[0].pos; var bw=h[0].weight;
+    for(var i=1u;i<8u;i++){if(h[i].weight>bw){bw=h[i].weight;best=h[i].pos;}}
+    sol=mix(sol,best,0.7);
+  }
+  let out=cx + cy*CELLS + cz*65025u;
+  vertex_buffer[out]=sol;
+}
+`;
+
+const logEl = document.getElementById('log');
+const log = (...a) => logEl.innerHTML += a.join(' ') + '\\n';
+const canvas = document.getElementById('slice');
+const ctx = canvas.getContext('2d');
+
+function renderSlice(verts, gridSize, sliceZ) {
+  const img = ctx.createImageData(256, 256);
+  const min = -0.1, max = 1.1, range = max - min;
+  for (let y = 0; y < 256; y++) {
+    for (let x = 0; x < 256; x++) {
+      const vi = x + y * gridSize + sliceZ * gridSize * gridSize;
+      const v = verts[vi];
+      const d = v ? Math.min(1, Math.max(0, (v[2] - min) / range)) : 0;
+      const idx = (y * 256 + x) * 4;
+      img.data[idx] = 0; img.data[idx+1] = d * 255; img.data[idx+2] = 0; img.data[idx+3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+async function main() {
+  log('<span class="info">[test] Starting QEF Governor Verification</span>');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) { log('<span class="fail">WebGPU not available</span>'); return; }
+  const requiredLimits = {};
+  if (adapter.limits.maxComputeInvocationsPerWorkgroup >= 512) {
+    requiredLimits.maxComputeInvocationsPerWorkgroup = 512;
+  }
+  const device = await adapter.requestDevice({ requiredLimits });
+  log('<span class="info">[test] Device obtained</span>');
+
+  const V = 257, C = 255;
+  const hermiteByteSize = V * V * V * 32; // 3*4 + 3*4 + 4 = 32 bytes per HermiteData
+  const vertexByteSize = C * C * C * 12; // 3*4 = 12 bytes per vertex
+
+  const hermiteBuf = device.createBuffer({ size: hermiteByteSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const vertexBuf = device.createBuffer({ size: vertexByteSize, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const paramsBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const readback = device.createBuffer({ size: vertexByteSize, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+
+  // Deterministic tensor: sphere r=0.35 centered at (0.5,0.5,0.5)
+  const data = new Float32Array(V * V * V * 8); // interleaved xyz+xyz+pad
+  const cx = 0.5, cy = 0.5, cz = 0.5, R = 0.35;
+  for (let vz = 0; vz < V; vz++) {
+    const z = vz / (V - 1);
+    for (let vy = 0; vy < V; vy++) {
+      const y = vy / (V - 1);
+      for (let vx = 0; vx < V; vx++) {
+        const x = vx / (V - 1);
+        const dx = x - cx, dy = y - cy, dz = z - cz;
+        const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        const off = (vx + vy * V + vz * V * V) * 8;
+        if (dist < 1e-6) { // avoid degenerate normal at exact center
+          data[off] = x; data[off+1] = y; data[off+2] = z;
+          data[off+3] = 0; data[off+4] = 1; data[off+5] = 0; data[off+6] = 0; data[off+7] = 1.0;
+        } else {
+          const nx = dx / dist, ny = dy / dist, nz = dz / dist;
+          const onSurf = dist <= R + 0.001 && dist >= R - 0.001;
+          data[off]   = onSurf ? cx + nx * R : x;
+          data[off+1] = onSurf ? cy + ny * R : y;
+          data[off+2] = onSurf ? cz + nz * R : z;
+          data[off+3] = nx; data[off+4] = ny; data[off+5] = nz;
+          data[off+6] = 0; data[off+7] = onSurf ? 1.0 : 0.0;
+        }
+      }
+    }
+  }
+  device.queue.writeBuffer(hermiteBuf, 0, data);
+  device.queue.writeBuffer(paramsBuf, 0, new Float32Array([0.3, 0.01])); // threshold, weightThreshold
+
+  const module = device.createShaderModule({ code: qefWGSL });
+  const pipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: { module, entryPoint: 'qef_solve' }
+  });
+
+  const bind = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: hermiteBuf } },
+      { binding: 1, resource: { buffer: vertexBuf } },
+      { binding: 2, resource: { buffer: paramsBuf } },
+    ]
+  });
+
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bind);
+  pass.dispatchWorkgroups(Math.ceil(C / 8), Math.ceil(C / 8), Math.ceil(C / 1));
+  pass.end();
+  enc.copyBufferToBuffer(vertexBuf, 0, readback, 0, vertexByteSize);
+  device.queue.submit([enc.finish()]);
+
+  await readback.mapAsync(GPUMapMode.READ);
+  const verts = new Float32Array(readback.getMappedRange().slice(0));
+
+  // Topology audit: check cells crossing the sphere surface
+  let crossings = 0, sumErr = 0, sumR = 0, maxErr = 0;
+  const errs = [];
+  for (let cz2 = 0; cz2 < C; cz2++) {
+    for (let cy2 = 0; cy2 < C; cy2++) {
+      for (let cx2 = 0; cx2 < C; cx2++) {
+        const vi = cx2 + cy2 * C + cz2 * C * C;
+        const v = [verts[vi*3], verts[vi*3+1], verts[vi*3+2]];
+        const dx = v[0]-cx, dy = v[1]-cy, dz = v[2]-cz;
+        const d = Math.sqrt(dx*dx+dy*dy+dz*dz);
+        // Count cells where 8 corners cross the sphere
+        let inside = 0, outside = 0;
+        for (let k = 0; k < 8; k++) {
+          const ox = (k & 1) ? cx2+1 : cx2, oy = (k & 2) ? cy2+1 : cy2, oz = (k & 4) ? cz2+1 : cz2;
+          const px = ox/(V-1), py = oy/(V-1), pz = oz/(V-1);
+          const r2 = (px-cx)**2 + (py-cy)**2 + (pz-cz)**2;
+          if (r2 < (R-0.001)**2) inside++; else outside++;
+        }
+        if (inside > 0 && outside > 0) {
+          crossings++;
+          const err = Math.abs(d - R);
+          sumErr += err; sumR += d; errs.push(err);
+          if (err > maxErr) maxErr = err;
+        }
+      }
+    }
+  }
+  const avgErr = sumErr / crossings;
+  const minErr = Math.min(...errs), maxD = Math.max(...errs.map(d => Math.abs(d - R)));
+  const rms = Math.sqrt(errs.reduce((s,e) => s + e*e, 0) / crossings);
+
+  log(`<span class="info">Cells evaluated: ${C*C*C}</span>`);
+  log(`<span class="info">Crossing cells (surface intersected): ${crossings}</span>`);
+  log(`<span class="info">Mean |d - R|: ${avgErr.toFixed(6)}</span>`);
+  log(`<span class="info">Max |d - R|: ${maxErr.toFixed(6)}</span>`);
+  log(`<span class="info">RMS error: ${rms.toFixed(6)}</span>`);
+  log(`<span class="info">Min error: ${minErr.toFixed(6)}</span>`);
+
+  const sigma = avgErr > 0.05 || maxErr > 0.15;
+  log(`<span class="${sigma?'fail':'pass'}">${sigma?'FAIL':'PASS'}: QEF dual vertices ${sigma?'BREACH':'STABLE'} within tolerance</span>`);
+
+  // Render middle z-slice of dual vertices
+  renderSlice(verts, C, Math.floor(C/2));
+
+  readback.unmap();
+}
+main().catch(e => log('<span class="fail">FATAL: ' + e.message + '</span>'));
+</script>
+</body>
+</html>

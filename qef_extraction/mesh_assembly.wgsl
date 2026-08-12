@@ -27,6 +27,7 @@ struct Vertex {
 @group(3) @binding(5) var<storage, read_write> mesh_index_count: atomic<u32>;
 @group(3) @binding(6) var<storage, read> density_field: array<f32>;
 @group(3) @binding(7) var<uniform> mesh_params: MeshParams;
+@group(3) @binding(8) var<storage, read> crossing_lut: array<u32>;
 
 // Spatial hash for vertex deduplication
 fn vertex_hash(pos: vec3<f32>) -> u32 {
@@ -73,20 +74,36 @@ fn deduplicate_vertices(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pos = raw_vertices[idx];
     let norm = compute_normal(pos);
     
-    // Simple dedup: just emit. Full dedup via hash table is phase 2.
-    // (Per-cell independent QEF naturally minimizes duplicates)
-    let slot = atomicAdd(&mesh_vertex_count, 1u);
-    if (slot < mesh_params.max_vertices) {
-        mesh_vertices[slot] = Vertex(
+    if (idx < mesh_params.max_vertices) {
+        mesh_vertices[idx] = Vertex(
             pos,
             norm,
             vec4<f32>(0.0, 0.0, 0.0, 0.0),  // material tensor filled by later pass
         );
     }
+    if (idx == 0u) {
+        atomicStore(&mesh_vertex_count, total);
+    }
 }
 
-// Phase 2: Build triangle indices via Delaunay-like triangulation
-// For MVP: connect vertices within each cell using a simple fan
+const TET_DECOMP: array<vec4<u32>, 6> = array<vec4<u32>, 6>(
+    vec4<u32>(0u, 1u, 3u, 7u),   // tet 0
+    vec4<u32>(0u, 1u, 5u, 7u),   // tet 1
+    vec4<u32>(0u, 4u, 5u, 7u),   // tet 2
+    vec4<u32>(0u, 4u, 6u, 7u),   // tet 3
+    vec4<u32>(0u, 2u, 3u, 7u),   // tet 4
+    vec4<u32>(0u, 2u, 6u, 7u),   // tet 5
+);
+
+fn get_crossing_vertex(cell_idx: u32, t: u32, e: u32) -> u32 {
+    let val = crossing_lut[cell_idx * 36u + t * 6u + e];
+    if (val == 0u) {
+        return 0u;
+    }
+    return val - 1u;
+}
+
+// Phase 2: Build triangle indices via Marching Tetrahedra edge-table triangulation
 @compute @workgroup_size(64)
 fn build_indices(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cell_idx = gid.x;
@@ -102,31 +119,128 @@ fn build_indices(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Skip boundary cells (no complete neighborhood)
     if (cx >= d - 1u || cy >= d - 1u || cz >= d - 1u) { return; }
     
-    // For MVP: each cell with density crossing emits 2 triangles
-    // forming a quad connecting cell center to neighbors
-    // This is a placeholder — proper triangulation uses the MT edge table
-    // to connect crossing points into faces.
+    // Gather corner densities
+    var corner_d: array<f32, 8>;
+    for (var i = 0u; i < 8u; i++) {
+        let dx = (i >> 0u) & 1u;
+        let dy = (i >> 1u) & 1u;
+        let dz = (i >> 2u) & 1u;
+        let ci = (cx + dx) + (cy + dy) * d + (cz + dz) * d * d;
+        corner_d[i] = density_field[ci];
+    }
     
-    let ci = cell_idx;
-    let density = density_field[ci];
-    
-    if (density < 0.1 || density > 0.9) { return; }
-    
-    // Emit a placeholder quad (2 triangles) connecting this cell to neighbors
-    // In production, this reads the MT crossing table to build proper faces.
-    // For MVP, we accept the simplification.
-    
-    let vc = (cx + 1u) + (cy + 1u) * d + (cz + 1u) * d * d;
-    let slot = atomicAdd(&mesh_index_count, 6u);
-    
-    if (slot + 6u <= mesh_params.max_indices) {
-        // Triangle 1
-        mesh_indices[slot + 0u] = ci;
-        mesh_indices[slot + 1u] = ci + 1u;
-        mesh_indices[slot + 2u] = ci + d;
-        // Triangle 2
-        mesh_indices[slot + 3u] = ci + 1u;
-        mesh_indices[slot + 4u] = ci + 1u + d;
-        mesh_indices[slot + 5u] = ci + d;
+    // Process the 6 tetrahedra
+    for (var t = 0u; t < 6u; t++) {
+        let tet = TET_DECOMP[t];
+        var mask = 0u;
+        for (var v = 0u; v < 4u; v++) {
+            if (corner_d[tet[v]] >= 0.1) {
+                mask |= (1u << v);
+            }
+        }
+        
+        if (mask == 0u || mask == 15u) { continue; }
+        
+        var num_indices = 0u;
+        var indices: array<u32, 6>;
+        
+        if (mask == 1u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 2u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 1u);
+            num_indices = 3u;
+        } else if (mask == 2u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 4u);
+            num_indices = 3u;
+        } else if (mask == 3u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 4u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 2u);
+            num_indices = 6u;
+        } else if (mask == 4u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 3u);
+            num_indices = 3u;
+        } else if (mask == 5u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 2u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 3u);
+            num_indices = 6u;
+        } else if (mask == 6u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 4u);
+            num_indices = 6u;
+        } else if (mask == 7u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 2u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 4u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 5u);
+            num_indices = 3u;
+        } else if (mask == 8u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 2u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 4u);
+            num_indices = 3u;
+        } else if (mask == 9u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 4u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 5u);
+            num_indices = 6u;
+        } else if (mask == 10u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 5u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 2u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 5u);
+            num_indices = 6u;
+        } else if (mask == 11u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 5u);
+            num_indices = 3u;
+        } else if (mask == 12u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 4u);
+            indices[3] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[4] = get_crossing_vertex(cell_idx, t, 4u);
+            indices[5] = get_crossing_vertex(cell_idx, t, 2u);
+            num_indices = 6u;
+        } else if (mask == 13u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 3u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 4u);
+            num_indices = 3u;
+        } else if (mask == 14u) {
+            indices[0] = get_crossing_vertex(cell_idx, t, 0u);
+            indices[1] = get_crossing_vertex(cell_idx, t, 1u);
+            indices[2] = get_crossing_vertex(cell_idx, t, 2u);
+            num_indices = 3u;
+        }
+        
+        if (num_indices > 0u) {
+            let slot = atomicAdd(&mesh_index_count, num_indices);
+            if (slot + num_indices <= mesh_params.max_indices) {
+                for (var i = 0u; i < num_indices; i++) {
+                    mesh_indices[slot + i] = indices[i];
+                }
+            }
+        }
     }
 }

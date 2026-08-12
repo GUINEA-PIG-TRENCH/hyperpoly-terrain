@@ -298,7 +298,11 @@ async function main() {
     document.getElementById('loader').textContent = 'WebGPU not supported.';
     return;
   }
-  const device = await adapter.requestDevice();
+  const requiredLimits = {};
+  if (adapter.limits.maxComputeInvocationsPerWorkgroup >= 512) {
+    requiredLimits.maxComputeInvocationsPerWorkgroup = 512;
+  }
+  const device = await adapter.requestDevice({ requiredLimits });
   const context = wgpuCanvas.getContext('webgpu');
   const format = navigator.gpu.getPreferredCanvasFormat();
   context.configure({ device, format, alphaMode: 'opaque' });
@@ -607,6 +611,7 @@ async function main() {
   // FRAME LOOP
   // ═══════════════════════════════════════════════════════════════
   let frame = 0;
+  let lastFrameTime = 0;
   let fpsCount = 0, fpsTime = 0;
   let displayFps = 0;
 
@@ -617,7 +622,7 @@ async function main() {
     requestAnimationFrame(animate);
     frame++;
     const dt = Math.min((time - (frame === 1 ? time : lastFrameTime)) / 1000, 0.05);
-    const lastFrameTime = time;
+    lastFrameTime = time;
     const t = time * 0.001;
 
     // ── Update THREE camera from WASD input ──

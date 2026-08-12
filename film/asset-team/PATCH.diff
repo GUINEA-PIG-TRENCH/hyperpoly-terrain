@@ -1,0 +1,8 @@
+--- a/wind_vegetation.mat
++++ b/wind_vegetation.mat
+@@ -11,6 +11,7 @@
+     { type : float,  name : lodDistance },
++    { type : float3, name : cameraPosition },
+     { type : sampler2d, name : materialTensor }
+ ],
+     shadingModel : lit,

@@ -83,6 +83,7 @@ pub struct QefPipeline {
     // Buffers (allocated once, reused per frame)
     density_field: Buffer,
     crossings: Buffer,
+    crossing_lut: Buffer,
     crossing_count: Buffer,
     raw_vertices: Buffer,
     vertex_count: Buffer,
@@ -153,6 +154,7 @@ impl QefPipeline {
                 storage_rw(1, false),    // crossing_count
                 storage_rw(2, false),    // crossings
                 uniform(3, false),       // params
+                storage_rw(4, false),    // crossing_lut
             ],
         });
 
@@ -179,6 +181,7 @@ impl QefPipeline {
                 storage_rw(5, false),    // mesh_index_count
                 storage_read(6, false),  // density_field
                 uniform(7, false),       // params
+                storage_read(8, false),  // crossing_lut
             ],
         });
 
@@ -250,6 +253,12 @@ impl QefPipeline {
         });
         let crossings = device.create_buffer(&BufferDescriptor {
             label: Some("crossings"),
+            size: (max_crossings as u64) * 4,
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let crossing_lut = device.create_buffer(&BufferDescriptor {
+            label: Some("crossing_lut"),
             size: (max_crossings as u64) * 4,
             usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -341,7 +350,7 @@ impl QefPipeline {
             grid_dim, cell_size,
             density_pipeline, mt_pipeline, qef_pipeline, dedup_pipeline, index_pipeline,
             density_bgl, mt_bgl, qef_bgl, mesh_bgl,
-            density_field, crossings, crossing_count, raw_vertices, vertex_count,
+            density_field, crossings, crossing_lut, crossing_count, raw_vertices, vertex_count,
             mesh_vertices, mesh_indices, mesh_vcount, mesh_icount,
             density_uniform, mt_uniform, qef_uniform, mesh_uniform,
             max_particles, max_crossings, max_vertices, max_indices,
@@ -384,6 +393,7 @@ impl QefPipeline {
 
         // Reset counters
         encoder.clear_buffer(&self.crossing_count, 0, 4);
+        encoder.clear_buffer(&self.crossing_lut, 0, (self.max_crossings as u64) * 4);
 
         // ── Pass 2: Marching Tetrahedra ────────────────────────────────
         {
@@ -395,6 +405,7 @@ impl QefPipeline {
                     BindGroupEntry { binding: 1, resource: self.crossing_count.as_entire_binding() },
                     BindGroupEntry { binding: 2, resource: self.crossings.as_entire_binding() },
                     BindGroupEntry { binding: 3, resource: self.mt_uniform.as_entire_binding() },
+                    BindGroupEntry { binding: 4, resource: self.crossing_lut.as_entire_binding() },
                 ],
             });
 
@@ -456,6 +467,7 @@ impl QefPipeline {
                     BindGroupEntry { binding: 5, resource: self.mesh_icount.as_entire_binding() },
                     BindGroupEntry { binding: 6, resource: self.density_field.as_entire_binding() },
                     BindGroupEntry { binding: 7, resource: self.mesh_uniform.as_entire_binding() },
+                    BindGroupEntry { binding: 8, resource: self.crossing_lut.as_entire_binding() },
                 ],
             });
 

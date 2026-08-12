@@ -49,6 +49,7 @@ fn cube_corner(idx: u32) -> vec3<f32> {
 @group(1) @binding(1) var<storage, read_write> crossing_count: atomic<u32>;  // total crossings
 @group(1) @binding(2) var<storage, read_write> crossings: array<u32>;          // packed: cell_idx | edge_data
 @group(1) @binding(3) var<uniform> mt_params: MTParams;
+@group(1) @binding(4) var<storage, read_write> crossing_lut: array<u32>;
 
 // Read density at a grid corner, with bounds check
 fn density_at(cx: u32, cy: u32, cz: u32) -> f32 {
@@ -69,8 +70,11 @@ fn cube_corner_density(cx: u32, cy: u32, cz: u32, corner: u32) -> f32 {
 
 // Linear interpolation along edge to find crossing point
 fn edge_interp(d0: f32, d1: f32, p0: vec3<f32>, p1: vec3<f32>) -> vec3<f32> {
-    let t = (mt_params.isosurface - d0) / (d1 - d0);
-    return mix(p0, p1, clamp(t, 0.0, 1.0));
+    let diff = d1 - d0;
+    let sign_diff = if (diff >= 0.0) { 1.0 } else { -1.0 };
+    let safe_diff = sign_diff * max(abs(diff), 1e-6);
+    let t = (mt_params.isosurface - d0) / safe_diff;
+    return mix(p0, p1, clamp(t, 0.001, 0.999));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -142,8 +146,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let slot = atomicAdd(&crossing_count, 1u);
             if (slot < arrayLength(&crossings)) {
                 crossings[slot] = packed;
-                // Store intersection point in parallel array
-                // (handled in separate pass or interleaved buffer)
+                let lut_idx = cell_base * 36u + t * 6u + e;
+                if (lut_idx < arrayLength(&crossing_lut)) {
+                    crossing_lut[lut_idx] = slot + 1u;
+                }
             }
             
             cell_crossings++;

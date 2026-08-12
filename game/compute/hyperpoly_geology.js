@@ -25,11 +25,24 @@ export class HyperPolyGeology {
     );
 
     // 2. Metadata buffer: array<vec4<f32>>[totalBricks * channels]
-    // Layout: [min, scale, 0, 0] per channel per brick
     this.metaBuffer = this.device.createBuffer({
-      size: this.totalBricks * this.channels * 16, // 4 × f32 × 4B = 16B per entry
+      size: this.totalBricks * this.channels * 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     });
+
+    // 3. Brick flags buffer: u32 per brick for active/visible state
+    this.brickFlagsBuffer = this.device.createBuffer({
+      size: this.totalBricks * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    });
+  }
+
+  async   stepSimulation(encoder) {
+    // Stub: dispatch passes that would normally advance simulation state.
+    // The edit manager handles terrain modifications; future passes
+    // will handle hydraulic/thermal simulation.
+    const pass = encoder.beginComputePass();
+    pass.end();
   }
 
   async uploadQuantizedTerrain(shellModelGenerator) {

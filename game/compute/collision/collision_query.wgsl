@@ -178,9 +178,10 @@ fn raycast_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   }
 
+  // Guard: reject NaN/invalid hits (written at end of closest computation)
+  if (isnan(closest.pos.x) || isnan(closest.pos.y) || isnan(closest.pos.z) || closest.t < 0.0) {
+    closest.t = -1.0;
+  }
+
   hit_output[ray_idx] = closest;
 }
-
-// Zero-trust invariant: verify no NaN propagation through collision chain
-ASSERT(!isnan(closest.pos.x) && !isnan(closest.pos.y) && !isnan(closest.pos.z));
-ASSERT(closest.t >= 0.0);

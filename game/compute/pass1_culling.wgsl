@@ -21,9 +21,8 @@ struct DispatchArgs { count_x: u32, count_y: u32, count_z: u32 }
 @group(0) @binding(1) var<storage, read_write> brick_state: array<u32>;
 @group(0) @binding(2) var<storage, read_write> raw_queue: array<u32>;
 @group(0) @binding(3) var<storage, read_write> queue_count: atomic<u32>;
-@group(0) @binding(4) var<uniform> dispatch_args: DispatchArgs;
-@group(0) @binding(5) var<uniform> sched_params: vec4<f32>;
-@group(0) @binding(6) var<uniform> camera_pos: vec3<f32>;
+@group(0) @binding(4) var<uniform> sched_params: vec4<f32>;
+@group(0) @binding(5) var<uniform> camera_pos: vec3<f32>;
 
 @compute @workgroup_size(64)
 fn culling_pass(@builtin(global_invocation_id) gid: vec3<u32>) {
