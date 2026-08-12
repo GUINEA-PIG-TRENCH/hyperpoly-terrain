@@ -3,7 +3,7 @@
  * Branch-optimized for typed array throughput.
  * Verified: max error < 0.001 on [0,1] gradient at 16³ resolution.
  */
-const F16 = (() => {
+export const F16 = (() => {
   const buf = new ArrayBuffer(4);
   const f32 = new Float32Array(buf);
   const u32 = new Uint32Array(buf);

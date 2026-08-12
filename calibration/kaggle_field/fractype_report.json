@@ -1,0 +1,28 @@
+{
+  "pipeline": "fractype material_calibration.js + geology_quantizer.js on Kaggle terrain",
+  "geometry": {
+    "W": 512,
+    "H": 256,
+    "depth": 16,
+    "brick": 16,
+    "bricksX": 32,
+    "bricksY": 1,
+    "bricksZ": 16,
+    "totalBricks": 512
+  },
+  "materials": {
+    "gravelBricks": 45,
+    "groundBricks": 467
+  },
+  "quantization": {
+    "gradient_self_test_pass": true,
+    "max_roundtrip_error": 0,
+    "within_threshold_lt_0_002": true
+  },
+  "outputs": [
+    "soa_ch0..5.bin (FP16 SoA u16)",
+    "meta.bin (vec4 [min,scale,0,0]/chan/brick)",
+    "c5_mip0..2.bin (cohesion mip chain)"
+  ],
+  "note": "SoA + meta are byte-identical to HyperPolyGeology.uploadQuantizedTerrain output, ready for conservation_pass/pass2_solver/render_terrain wgsl."
+}

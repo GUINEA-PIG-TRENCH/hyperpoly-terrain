@@ -114,6 +114,34 @@ export class TerrainRenderer {
   }
 
   /**
+   * Update uniforms each frame using AI Lighting params.
+   * @param {Float32Array} viewProjMatrix - 16 floats column-major
+   * @param {object} aiLight - {sunDirection, ambientColor, sunColor, fogDensity, fogColor}
+   */
+  setViewProjAI(viewProjMatrix, aiLight) {
+    const device = this.device;
+    const data = new Float32Array(32);
+    data.set(viewProjMatrix, 0);
+    // sun_direction (from AI or procedural)
+    data[16] = aiLight.sunDirection[0];
+    data[17] = aiLight.sunDirection[1];
+    data[18] = aiLight.sunDirection[2];
+    // ambient_color
+    data[20] = aiLight.ambientColor[0];
+    data[21] = aiLight.ambientColor[1];
+    data[22] = aiLight.ambientColor[2];
+    // sun_color
+    data[24] = aiLight.sunColor[0];
+    data[25] = aiLight.sunColor[1];
+    data[26] = aiLight.sunColor[2];
+    // camera_pos (unused by shader currently, but preserved)
+    data[28] = 0; data[29] = 0; data[30] = 0;
+    // time
+    data[31] = performance.now() * 0.001;
+    device.queue.writeBuffer(this.uniformBuffer, 0, data);
+  }
+
+  /**
    * Update uniforms each frame.
    * @param {Float32Array} viewProjMatrix - 16 floats column-major
    * @param {vec3} cameraPos - camera world position

@@ -80,6 +80,7 @@ import { HyperPolyGeology } from './compute/hyperpoly_geology.js';
 import { Phase5Extractor } from './compute/phase5_extractor/phase5_host.js';
 import { Phase5Draw } from './compute/phase5_extractor/phase5_draw.js';
 import { TerrainRenderer } from './render/terrain_renderer.js';
+import { LightingAI } from './compute/lighting_ai.js';
 
 // ═══════════════════════════════════════════════════════════════
 // CONFIG
@@ -470,6 +471,11 @@ async function main() {
   const terrainRenderer = new TerrainRenderer(device, context, depthTexture);
   await terrainRenderer.init(renderWGSL);
 
+  // ── Lighting AI ──
+  const lightingAI = new LightingAI();
+  await lightingAI.init();
+  console.log('[MAIN] LightingAI initialized, usingAI:', lightingAI.usingAI);
+
   // Compute engine
   const engine = new HyperPolyGeology(device, 256);
   const extractor = new Phase5Extractor(device, 256);
@@ -642,17 +648,27 @@ async function main() {
     const underwaterEl = document.getElementById('underwater-overlay');
     underwaterEl.style.display = cam.position.y < waveH + 0.2 ? 'block' : 'none';
 
-    // ── Update WebGPU terrain renderer ──
+    // ── AI Lighting: Gemma 4 dynamic params ──
+    const aiLight = lightingAI.update(dt, [cam.position.x, cam.position.y, cam.position.z], cam.position.y);
+
+    // ── Update WebGPU terrain renderer with AI-driven lighting ──
     const vp = getViewProj(cam.position, yaw, pitch);
-    terrainRenderer.setViewProj(vp, [cam.position.x, cam.position.y, cam.position.z], t);
+    terrainRenderer.setViewProjAI(vp, aiLight);
+
+    // Smooth Three.js scene lighting to match AI params
+    const sun = aiLight.sunDirection;
+    dirLight.position.set(sun[0] * 80, sun[1] * 80, sun[2] * 80);
+    dirLight.color.setRGB(...aiLight.sunColor);
+    dirLight.intensity = 0.5 + aiLight.sunDirection[1] * 0.5;
+    ambLight.color.setRGB(...aiLight.ambientColor);
+    ambLight.intensity = 0.5 + aiLight.sunDirection[1] * 0.3;
+    scene.fog.color.setRGB(...aiLight.fogColor);
+    scene.fog.density = aiLight.fogDensity;
+    scene.background.copy(scene.fog.color);
 
     const encoder = device.createCommandEncoder();
     terrainRenderer.render(encoder, extractor.getVertexBuffer(), draw);
     device.queue.submit([encoder.finish()]);
-
-    // Compare with previous frame for lighting transitions
-    const cameraBiome = getBiome(cam.position.x, cam.position.z);
-    updateBiomeLighting(cameraBiome, t);
 
     // ── Three.js overlay rendering ──
     if (frame % 2 === 0) animateWater(t);

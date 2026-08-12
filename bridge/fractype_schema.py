@@ -15,11 +15,15 @@ class Scale(Enum):
 
 
 class VinculumRole(Enum):
-    """Four roles of the vinculum per historical theory."""
-    GROUPING = "grouping"        # overline binding expressions (Chuquet 1484)
-    DIVISION = "division"         # fraction bar (Fibonacci 1202)
+    """Eight roles/variants of the vinculum per historical and modern theory."""
+    GROUPING = "grouping"          # overline binding expressions (Chuquet 1484)
+    DIVISION = "division"          # fraction bar (Fibonacci 1202)
     MULTIPLICATION = "multiplication"  # Roman numeral extension (V̄ = 5,000)
-    REPETITION = "repetition"     # periodic notation (vinculum over repeating digits)
+    REPETITION = "repetition"      # periodic notation (vinculum over repeating digits)
+    RADICAL = "radical"            # square root / radical (Rudolff 1525)
+    CONJUGATE = "conjugate"        # mirror / complex conjugate
+    COMPLEMENT = "complement"      # set complement
+    NEGATION = "negation"          # logical negation / strikethrough
 
 
 # ── Bar glyphs per role ──
@@ -28,6 +32,10 @@ ROLE_GLYPH = {
     VinculumRole.DIVISION: "─",         # horizontal box-drawing U+2500
     VinculumRole.MULTIPLICATION: "═",   # double horizontal U+2550
     VinculumRole.REPETITION: "┄",       # dashed U+2504
+    VinculumRole.RADICAL: "─",          # radical horizontal extension
+    VinculumRole.CONJUGATE: "‾",        # conjugate overline
+    VinculumRole.COMPLEMENT: "ᶜ",       # complement suffix U+1D9C
+    VinculumRole.NEGATION: "̶",          # combining long stroke overlay U+0336
 }
 
 ROLE_GLYPH_ASCII = {
@@ -35,6 +43,10 @@ ROLE_GLYPH_ASCII = {
     VinculumRole.DIVISION: "-",
     VinculumRole.MULTIPLICATION: "=",
     VinculumRole.REPETITION: "~",
+    VinculumRole.RADICAL: "r",
+    VinculumRole.CONJUGATE: "*",
+    VinculumRole.COMPLEMENT: "c",
+    VinculumRole.NEGATION: "~",
 }
 
 
@@ -42,7 +54,7 @@ ROLE_GLYPH_ASCII = {
 class FracNode:
     """A vinculum-compressed pair. v2: top/bottom can be str or nested FracNode."""
     top: Union[str, "FracNode"]
-    bottom: Union[str, "FracNode"]
+    bottom: Union[str, "FracNode"] = ""
     title: str = ""
     scale: Scale = Scale.NORMAL
     color_hint: str = "nominal"
@@ -55,6 +67,8 @@ class FracNode:
         return self.top
 
     def bottom_text(self) -> str:
+        if not self.bottom:
+            return ""
         if isinstance(self.bottom, FracNode):
             return self.bottom.to_inline()
         return self.bottom
@@ -82,30 +96,97 @@ class FracNode:
     # ── Export ──
     def to_react(self) -> str:
         top = self.top.to_react() if isinstance(self.top, FracNode) else f'"{self.top}"'
-        bottom = self.bottom.to_react() if isinstance(self.bottom, FracNode) else f'"{self.bottom}"'
-        return (
-            f'<VinculumTypography top={top} bottom={bottom} '
-            f'scale="{self.scale.value}" role="{self.role.value}" />'
-        )
+        if self.bottom:
+            bottom = self.bottom.to_react() if isinstance(self.bottom, FracNode) else f'"{self.bottom}"'
+            return (
+                f'<VinculumTypography top={top} bottom={bottom} '
+                f'scale="{self.scale.value}" role="{self.role.value}" />'
+            )
+        else:
+            return (
+                f'<VinculumTypography top={top} '
+                f'scale="{self.scale.value}" role="{self.role.value}" />'
+            )
 
     def to_latex(self) -> str:
         top = self.top.to_latex() if isinstance(self.top, FracNode) else f"\\text{{{self.top}}}"
-        bottom = self.bottom.to_latex() if isinstance(self.bottom, FracNode) else f"\\text{{{self.bottom}}}"
-        return f"\\frac{{{top}}}{{{bottom}}}"
+        if self.bottom:
+            bottom = self.bottom.to_latex() if isinstance(self.bottom, FracNode) else f"\\text{{{self.bottom}}}"
+            if self.role == VinculumRole.RADICAL:
+                return f"\\sqrt[{bottom}]{{{top}}}"
+            return f"\\frac{{{top}}}{{{bottom}}}"
+        else:
+            if self.role == VinculumRole.RADICAL:
+                return f"\\sqrt{{{top}}}"
+            elif self.role == VinculumRole.GROUPING or self.role == VinculumRole.CONJUGATE:
+                return f"\\overline{{{top}}}"
+            elif self.role == VinculumRole.MULTIPLICATION:
+                return f"\\overline{{\\overline{{{top}}}}}"
+            elif self.role == VinculumRole.REPETITION:
+                return f"\\overline{{{top}}}"
+            elif self.role == VinculumRole.COMPLEMENT:
+                return f"{{{top}}}^{{c}}"
+            elif self.role == VinculumRole.NEGATION:
+                return f"\\xout{{{top}}}"
+            return top
 
     def to_terminal_lines(self, glyph: str = None) -> list[str]:
-        """3-line terminal vinculum block. Respects role for bar glyph."""
-        if glyph is None:
-            glyph = ROLE_GLYPH.get(self.role, "─")
+        """Terminal vinculum block. Respects role for bar glyph and single-valued states."""
         top = self.top_text()
         bottom = self.bottom_text()
-        width = max(len(top), len(bottom), len(self.title)) + 2
+        
+        # Double-valued representation
+        if bottom:
+            if glyph is None:
+                glyph = ROLE_GLYPH.get(self.role, "─")
+            width = max(len(top), len(bottom), len(self.title)) + 2
+            lines = []
+            if self.title:
+                lines.append(f"[{self.title}]")
+            
+            if self.role == VinculumRole.RADICAL:
+                lines.append(f" √ {top}".center(width))
+                lines.append("─" * width)
+                lines.append(bottom.center(width))
+            else:
+                lines.append(top.center(width))
+                lines.append(glyph * width)
+                lines.append(bottom.center(width))
+            return lines
+
+        # Single-valued representation
+        width = max(len(top), len(self.title)) + 2
         lines = []
         if self.title:
             lines.append(f"[{self.title}]")
-        lines.append(top.center(width))
-        lines.append(glyph * width)
-        lines.append(bottom.center(width))
+            
+        if self.role == VinculumRole.DIVISION:
+            lines.append(top.center(width))
+            lines.append("─" * width)
+            lines.append(" ".center(width))
+        elif self.role == VinculumRole.GROUPING or self.role == VinculumRole.CONJUGATE:
+            glyph = ROLE_GLYPH.get(self.role, "‾")
+            lines.append(glyph * len(top))
+            lines.append(top)
+        elif self.role == VinculumRole.MULTIPLICATION:
+            glyph = ROLE_GLYPH.get(self.role, "═")
+            lines.append(glyph * len(top))
+            lines.append(top)
+        elif self.role == VinculumRole.REPETITION:
+            glyph = ROLE_GLYPH.get(self.role, "┄")
+            lines.append(glyph * len(top))
+            lines.append(top)
+        elif self.role == VinculumRole.RADICAL:
+            lines.append(" ┌" + "─" * len(top))
+            lines.append(f"√ {top}")
+        elif self.role == VinculumRole.COMPLEMENT:
+            lines.append(f"{top}ᶜ")
+        elif self.role == VinculumRole.NEGATION:
+            negated = "".join(ch + "̶" for ch in top)
+            lines.append(negated)
+        else:
+            lines.append(top)
+            
         return lines
 
     def to_terminal_overline(self) -> str:
@@ -116,9 +197,25 @@ class FracNode:
         return f"{bar}\n {top}"
 
     def to_inline(self) -> str:
-        """Single-line: 'top ∕ bottom'. Nested children render their own inline."""
+        """Single-line: 'top ∕ bottom' or single-valued representation."""
         top = self.top_text()
         bottom = self.bottom_text()
+        if not bottom:
+            if self.role == VinculumRole.RADICAL:
+                return f"√({top})"
+            elif self.role == VinculumRole.COMPLEMENT:
+                return f"{top}ᶜ"
+            elif self.role == VinculumRole.NEGATION:
+                return "".join(ch + "̶" for ch in top)
+            elif self.role == VinculumRole.GROUPING:
+                return "".join(ch + "\u0305" for ch in top)
+            elif self.role == VinculumRole.CONJUGATE:
+                return "".join(ch + "\u0304" for ch in top)
+            elif self.role == VinculumRole.MULTIPLICATION:
+                return f"|{top}|"
+            elif self.role == VinculumRole.REPETITION:
+                return "".join(ch + "\u0305" for ch in top)
+            return top
         return f"{top} ∕ {bottom}"
 
     # ── Parsing ──
@@ -198,15 +295,35 @@ class FracTable:
                 lines.append("")
             if node.title:
                 lines.append(f"[{node.title}]")
-            lines.append(node.top_text().center(w))
-            lines.append("─" * w)
-            lines.append(node.bottom_text().center(w))
+            if not node.bottom:
+                node_lines = node.to_terminal_lines()
+                for line in node_lines:
+                    if line.strip() != f"[{node.title}]":
+                        lines.append(line.center(w))
+            else:
+                glyph = ROLE_GLYPH.get(node.role, "─")
+                if node.role in (VinculumRole.COMPLEMENT, VinculumRole.NEGATION):
+                    glyph = "─"
+                lines.append(node.top_text().center(w))
+                lines.append(glyph * w)
+                lines.append(node.bottom_text().center(w))
         return lines
 
     def to_terminal_table(self) -> list[str]:
         w = self._col_width
         tops = [n.top_text().center(w) for n in self.nodes]
-        bars = ["─" * w for _ in self.nodes]
+        bars = []
+        for n in self.nodes:
+            g = ROLE_GLYPH.get(n.role, "─")
+            if n.role in (VinculumRole.COMPLEMENT, VinculumRole.NEGATION):
+                g = "─"
+            if not n.bottom:
+                if n.role == VinculumRole.DIVISION:
+                    bars.append("─" * w)
+                else:
+                    bars.append(" " * w)
+            else:
+                bars.append(g * w)
         bottoms = [n.bottom_text().center(w) for n in self.nodes]
         sep = " │ "
         return [

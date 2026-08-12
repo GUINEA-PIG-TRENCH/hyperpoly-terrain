@@ -1,0 +1,90 @@
+{
+  "calibration": {
+    "computed_means": {
+      "gravel": {
+        "density": 0.4335,
+        "cohesion": 0.7415,
+        "perm": 0.5325
+      },
+      "ground": {
+        "density": 0.3932,
+        "cohesion": 0.8917,
+        "perm": 0.481
+      }
+    },
+    "calibration_json_centers": {
+      "gravel": {
+        "perm_y": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.46750515699386597,
+          "note": "roughness\u2192permeability, inverse relationship"
+        },
+        "density": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.4334781765937805,
+          "note": "displacement\u2192density variation"
+        },
+        "cohesion": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.7415472269058228,
+          "note": "AO\u2192cohesion (cavities trap = cohesive zones)"
+        }
+      },
+      "ground": {
+        "perm_y": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.5189620852470398,
+          "note": "roughness\u2192permeability, inverse relationship"
+        },
+        "density": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.39317309856414795,
+          "note": "displacement\u2192density variation"
+        },
+        "cohesion": {
+          "min": 0.0,
+          "max": 1.0,
+          "calibrated_center": 0.8916893601417542,
+          "note": "AO\u2192cohesion (cavities trap = cohesive zones)"
+        }
+      }
+    },
+    "mapping": "cohesion<-AO, permeability<-1-roughness, density<-displacement"
+  },
+  "conservation": {
+    "ticks": 200,
+    "brick": 16,
+    "max_uncorrected_drift_pct": 0.0033,
+    "max_corrected_drift_pct": 7e-06,
+    "claim1_pass_lt_0.001pct": true,
+    "caveat": "STRICT correction subtracts a uniform delta from every voxel incl. zero-mass cells, so mass leaks when blocks hit the [0,1] bounds; Claim 1 holds for interior fields (verified <0.001%), not for binary/edge-saturating masks"
+  },
+  "mip_chain": {
+    "levels": [
+      [
+        256,
+        512
+      ],
+      [
+        128,
+        256
+      ],
+      [
+        64,
+        128
+      ]
+    ],
+    "c5_channel": "cohesion",
+    "render_shader": "c5_volumetric_mip.wgsl"
+  },
+  "gaps_closed": [
+    "Calibration pipeline (Kaggle terrain + fractype PBR assets)",
+    "Real-data conservation validation (Claim 1)",
+    "Mip chain for volumetric render shader"
+  ]
+}

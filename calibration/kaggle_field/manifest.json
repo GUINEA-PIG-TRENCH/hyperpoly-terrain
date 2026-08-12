@@ -1,0 +1,27 @@
+{
+  "format": "MANIFOLD_6CH_MATERIAL_TENSOR",
+  "dtype": "float32",
+  "shape": [
+    256,
+    512,
+    6
+  ],
+  "channel_order": [
+    "density",
+    "cohesion",
+    "permeability",
+    "water",
+    "sediment",
+    "oxidation"
+  ],
+  "source": {
+    "kaggle": "silviaarellano/heightmap-and-textures",
+    "tile": "hmap_-100_34__0_T.png",
+    "fractype_calibration": [
+      "gravel.zip",
+      "ground.zip",
+      "calibration.json"
+    ]
+  },
+  "material_classification": "609 steep cells -> gravel, 130463 gentle -> ground"
+}
