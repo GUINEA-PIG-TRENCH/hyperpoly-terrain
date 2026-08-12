@@ -1,0 +1,330 @@
+# Gameplay Recorder Configuration
+# Supports fractype prototype variants, Kaggle iteration, and open-source assets
+
+recorder:
+  # Core recording settings
+  target_fps: 60
+  capture_resolution: [3840, 2160]  # 4K default
+  bitrate_mbps: 100
+  codec: "hevc_nvenc"  # GPU-accelerated encoding
+  output_format: "mp4"
+  
+  # Multi-source capture
+  sources:
+    - name: "game_window"
+      type: "window_capture"
+      priority: 1
+    - name: "gopro_mount_1"
+      type: "simulated_mount"
+      priority: 2
+    - name: "gopro_mount_2"
+      type: "simulated_mount"
+      priority: 3
+    - name: "depth_buffer"
+      type: "gpu_buffer_capture"
+      priority: 4
+    - name: "normal_buffer"
+      type: "gpu_buffer_capture"
+      priority: 5
+
+gopro_mounts:
+  # GoPro mount simulation system
+  mounts:
+    - id: "helmet_front"
+      name: "Helmet Front Mount"
+      position_offset: [0.0, 0.15, 0.1]  # x, y, z relative to player
+      rotation_offset: [0.0, 0.0, 0.0]   # pitch, yaw, roll
+      fov_degrees: 122.6  # GoPro Hero 11 wide FOV
+      aspect_ratio: 16/9
+      stabilization: "hypersmooth_5"
+      lens_distortion: "gopro_wide"
+      motion_blur: true
+      exposure_mode: "auto"
+      
+    - id: "chest_mount"
+      name: "Chest Mount"
+      position_offset: [0.0, -0.1, 0.05]
+      rotation_offset: [15.0, 0.0, 0.0]
+      fov_degrees: 122.6
+      aspect_ratio: 16/9
+      stabilization: "hypersmooth_5"
+      lens_distortion: "gopro_wide"
+      
+    - id: "handlebar_mount"
+      name: "Handlebar/Weapon Mount"
+      position_offset: [0.3, -0.05, 0.2]
+      rotation_offset: [0.0, 0.0, 0.0]
+      fov_degrees: 122.6
+      aspect_ratio: 16/9
+      stabilization: "hypersmooth_5"
+      
+    - id: "drone_follow"
+      name: "Drone Follow Cam"
+      position_offset: [0.0, 5.0, -3.0]
+      rotation_offset: [-30.0, 0.0, 0.0]
+      fov_degrees: 94.4  # Linear FOV
+      aspect_ratio: 16/9
+      stabilization: "gimbal_simulation"
+      
+    - id: "suction_cup"
+      name: "Vehicle Suction Cup"
+      position_offset: [0.0, 0.5, 1.0]
+      rotation_offset: [0.0, 0.0, 0.0]
+      fov_degrees: 122.6
+      aspect_ratio: 16/9
+      stabilization: "hypersmooth_5"
+      vibration_profile: "vehicle_engine"
+      
+  # Global mount settings
+  global:
+    enable_motion_blur: true
+    enable_lens_distortion: true
+    enable_chromatic_aberration: true
+    enable_vignetting: true
+    rolling_shutter_simulation: true
+    sensor_noise_profile: "gopro_hero11"
+
+fractype_integration:
+  # Fractype prototype variant integration
+  prototypes:
+    - name: "fractype_core"
+      path: "../../game/compute"
+      variants:
+        - "material_calibration"
+        - "geology_quantizer"
+        - "hyperpoly_geology"
+        - "conservation_pass"
+        - "pass2_solver"
+        
+    - name: "fractype_game"
+      path: "../../game"
+      variants:
+        - "world_biomes"
+        - "hydraulic_host"
+        - "terrain_renderer"
+        
+    - name: "fractype_film"
+      path: "../../film"
+      variants:
+        - "kaggle_render"
+        - "terrain_generation"
+        
+  # Continuous iteration settings
+  iteration:
+    enabled: true
+    interval_seconds: 300  # 5 minutes between iterations
+    max_iterations_per_session: 50
+    feedback_threshold: 0.85  # Quality threshold for auto-promotion
+    variant_selection: "adaptive"  # adaptive, random, weighted
+    
+  # Shader hot-reload
+  shader_hot_reload:
+    enabled: true
+    watch_paths:
+      - "../../game/compute"
+      - "../../game/render"
+      - "./shaders"
+    debounce_ms: 500
+
+kaggle_pipeline:
+  # Kaggle dataset integration for continuous learning
+  datasets:
+    - name: "heightmap_textures"
+      kaggle_id: "silviaarellano/heightmap-and-textures"
+      local_path: "../../calibration/kaggle/Heightmap_and_Textures"
+      usage: "terrain_generation"
+      auto_update: true
+      update_frequency_hours: 24
+      
+    - name: "terrain_classification"
+      kaggle_id: "user/terrain-classification"
+      local_path: "./kaggle_cache/terrain_classification"
+      usage: "biome_detection"
+      auto_update: false
+      
+    - name: "gameplay_telemetry"
+      kaggle_id: "user/gameplay-telemetry-datasets"
+      local_path: "./kaggle_cache/gameplay_telemetry"
+      usage: "behavior_analysis"
+      auto_update: true
+      update_frequency_hours: 12
+      
+  # Continuous learning loop
+  learning:
+    enabled: true
+    model_update_interval_hours: 6
+    training_sample_size: 10000
+    validation_split: 0.2
+    metrics:
+      - "visual_quality_score"
+      - "terrain_realism_index"
+      - "gameplay_engagement"
+      - "recording_stability"
+      
+  # Feature extraction
+  feature_extraction:
+    enabled: true
+    extractors:
+      - "terrain_features"
+      - "visual_complexity"
+      - "color_palette"
+      - "motion_patterns"
+      - "player_behavior"
+
+assets:
+  # Open-source royalty-free asset pipeline
+  sources:
+    - name: "kenney_assets"
+      url: "https://kenney.nl/assets"
+      license: "CC0"
+      categories: ["3d_models", "textures", "audio", "ui"]
+      auto_download: true
+      
+    - name: "opengameart"
+      url: "https://opengameart.org"
+      license: ["CC0", "CC-BY", "CC-BY-SA", "GPL"]
+      categories: ["3d_models", "textures", "sprites", "audio"]
+      auto_download: false  # Requires license verification
+      
+    - name: "polyhaven"
+      url: "https://polyhaven.com"
+      license: "CC0"
+      categories: ["hdri", "textures", "models"]
+      auto_download: true
+      
+    - name: "ambientcg"
+      url: "https://ambientcg.com"
+      license: "CC0"
+      categories: ["pbr_materials", "hdri", "3d_models"]
+      auto_download: true
+      
+    - name: "sketchfab_free"
+      url: "https://sketchfab.com"
+      license: "CC-BY"
+      categories: ["3d_models"]
+      auto_download: false
+      
+    - name: "github_assets"
+      url: "https://github.com"
+      license: ["MIT", "Apache-2.0", "BSD-3-Clause"]
+      categories: ["shaders", "scripts", "tools"]
+      auto_download: true
+      repos:
+        - "KenneyNL/assets"
+        - "mmp/pbrt-v3"
+        - "google/filament"
+        - "nvpro-samples/gltf_scene"
+        
+  # Asset processing
+  processing:
+    enabled: true
+    texture_compression: "basis_universal"
+    model_optimization: "meshoptimizer"
+    audio_compression: "opus"
+    generate_lods: true
+    generate_impulse_responses: true
+    pbr_validation: true
+    
+  # Asset tagging for R&D
+  tagging:
+    enabled: true
+    auto_tag: true
+    tags:
+      - "terrain"
+      - "vegetation"
+      - "architecture"
+      - "vehicle"
+      - "character"
+      - "effect"
+      - "ui"
+      - "audio"
+
+analysis:
+  # Visual analysis pipeline for R&D review
+  pipelines:
+    - name: "visual_quality"
+      enabled: true
+      metrics:
+        - "sharpness"
+        - "color_accuracy"
+        - "dynamic_range"
+        - "temporal_stability"
+        - "compression_artifacts"
+      reference_comparison: true
+      
+    - name: "terrain_analysis"
+      enabled: true
+      metrics:
+        - "elevation_distribution"
+        - "slope_distribution"
+        - "material_distribution"
+        - "erosion_realism"
+        - "detail_preservation"
+      fractype_validation: true
+      
+    - name: "gameplay_metrics"
+      enabled: true
+      metrics:
+        - "player_visibility"
+        - "objective_clarity"
+        - "visual_clutter"
+        - "performance_impact"
+        - "motion_sickness_risk"
+      
+    - name: "gopro_simulation_validation"
+      enabled: true
+      metrics:
+        - "stabilization_effectiveness"
+        - "fov_accuracy"
+        - "distortion_match"
+        - "motion_characteristics"
+        - "color_science_match"
+      
+    - name: "fractype_continuous_validation"
+      enabled: true
+      metrics:
+        - "conservation_drift"
+        - "quantization_error"
+        - "material_calibration_drift"
+        - "shader_compilation_time"
+        - "gpu_memory_usage"
+        
+  # Output formats
+  output:
+    formats: ["json", "csv", "html_report", "video_overlay"]
+    include_heatmaps: true
+    include_timelines: true
+    include_comparisons: true
+
+output:
+  # Output management
+  directories:
+    recordings: "./output/recordings"
+    analysis: "./output/analysis"
+    assets: "./output/assets"
+    models: "./output/models"
+    reports: "./output/reports"
+    temp: "./output/temp"
+    
+  # File naming
+  naming:
+    pattern: "{timestamp}_{session_id}_{source}_{variant}"
+    timestamp_format: "%Y%m%d_%H%M%S"
+    
+  # Cleanup
+  cleanup:
+    max_age_days: 30
+    max_size_gb: 500
+    keep_flagged: true
+
+session:
+  # Session management
+  auto_start: false
+  max_duration_hours: 8
+  auto_save_interval_minutes: 10
+  crash_recovery: true
+  metadata:
+    record_system_info: true
+    record_gpu_stats: true
+    record_game_state: true
+    record_input_events: true
