@@ -17,7 +17,7 @@ jobs:
           node-version: '20'
       - name: Install dependencies
         run: npm ci || echo "No package.json, skipping"
-- name: WebGPU pipeline compilation test
+      - name: WebGPU pipeline compilation test
         run: |
           node <<'EOF'
           // Minimal WebGPU pipeline compilation smoke test
